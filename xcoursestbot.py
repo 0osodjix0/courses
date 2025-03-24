@@ -3,7 +3,7 @@ import os
 import logging
 import psycopg2
 import random
-from psycopg2 import OperationalError, IntegrityErro
+from psycopg2 import OperationalError, IntegrityError
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
