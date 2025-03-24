@@ -3,6 +3,7 @@ import os
 import logging
 import psycopg2
 import random
+from psycopg2 import OperationalError, IntegrityErro
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
@@ -598,7 +599,7 @@ async def process_solution(message: Message, state: FSMContext):
         await message.answer("✅ Решение отправлено на проверку!")
         await notify_admin(task_id, user_id)
 
-    except sqlite3.IntegrityError as e:
+    except psycopg2.IntegrityError as e:
         logger.error(f"Ошибка целостности данных: {str(e)}")
         await message.answer("❌ Ошибка: Недействительные данные")
     except Exception as e:
@@ -896,14 +897,14 @@ async def admin_command(message: types.Message):
         return
     
     try:
-        with Database() as cursor:
+        with db.cursor() as cursor:
             cursor.execute("SELECT 1 FROM courses LIMIT 1")
             
         await message.answer(
             "🛠 Панель администратора:",
             reply_markup=admin_menu()
         )
-    except sqlite3.OperationalError as e:
+    except psycopg2.OperationalError as e:  # <-- Исправлено здесь
         logger.error(f"Database error: {e}")
         await message.answer("❌ Ошибка подключения к базе данных")
     except Exception as e:
@@ -951,7 +952,7 @@ async def process_course_media(message: types.Message, state: FSMContext):
             reply_markup=admin_menu()
         )
     
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         await message.answer("❌ Курс с таким названием уже существует!")
     
     await state.clear()
