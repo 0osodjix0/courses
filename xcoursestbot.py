@@ -2,7 +2,6 @@
 import random 
 import os
 import logging
-import sqlite3
 import psycopg2
 logging.basicConfig()
 logger = logging.getLogger('sqlalchemy.engine')
