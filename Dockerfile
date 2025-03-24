@@ -1,12 +1,14 @@
-# Используйте официальный образ Python как базовый
-FROM python:3.10-slim
+# Используем официальный образ Python
+FROM python:3.10
 
-# Установите рабочую директорию
+# Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
 
-# Скопируйте requirements.txt и установите зависимости
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# Копируем файлы проекта в контейнер
+COPY . .
 
-# Укажите команду для запуска приложения
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Запуск бота
 CMD ["python", "xcoursestbot.py"]
