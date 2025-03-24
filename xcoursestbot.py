@@ -1305,9 +1305,6 @@ async def finalize_task(message: Message, state: FSMContext):
     await state.clear()
 
    ### BLOCK 15 (UPDATED): STARTUP ###
-from aiogram import executor
-import asyncio
-
 async def on_startup(dp):
     logger.info("Бот успешно запущен")
     await bot.send_message(ADMIN_ID, "✅ Бот запущен")
