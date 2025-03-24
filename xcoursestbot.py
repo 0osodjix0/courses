@@ -33,13 +33,14 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # Подключаемся с SSL
-conn = psycopg2.connect(
+conn = psycopg2.connect(  # ← Здесь не хватает закрывающей скобки!
     dbname=result.path[1:],
     user=result.username,
     password=result.password,
     host=result.hostname,
     port=result.port,
     sslmode='require'
+)# )  ← Скобка отсутствует или закомментирована
 
 DATABASE_URL = os.getenv('DATABASE_URL')
 engine = create_engine(
