@@ -3,6 +3,7 @@ import random
 import os
 import logging
 import sqlite3
+import psycopg2
 logging.basicConfig()
 logger = logging.getLogger('sqlalchemy.engine')
 logger.setLevel(logging.INFO)
@@ -27,13 +28,12 @@ load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # Инициализация бота
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-async def health_check(request):
-    return web.Response(text="OK")
     
 # Настройка логгера
 logging.basicConfig(
