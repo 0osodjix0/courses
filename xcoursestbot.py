@@ -5,7 +5,7 @@ import psycopg2
 import random
 from urllib.parse import urlparse
 from contextlib import contextmanager
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types F
 from aiogram.fsm.strategy import FSMStrategy
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -21,6 +21,8 @@ from aiogram.types import (
 )
 from aiogram.utils.media_group import MediaGroupBuilder
 
+storage = MemoryStorage() 
+
 # Инициализация логгера
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +35,7 @@ load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_URL = os.getenv('DATABASE_URL')
+dp = Dispatcher(storage=storage)  
 
 # Проверка переменных окружения
 if not all([TOKEN, ADMIN_ID, DATABASE_URL]):
