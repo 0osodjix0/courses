@@ -1,1 +1,0 @@
-web: python xcoursestbot.py
