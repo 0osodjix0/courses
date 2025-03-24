@@ -3,3 +3,4 @@ python-dotenv
 aiogram==3.0.0b7
 sqlalchemy
 aiohttp
+python-dotenv==0.19 
