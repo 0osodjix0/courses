@@ -20,7 +20,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardRemove
 )
-from aiogram.types import MediaGroup
+from aiogram.utils.media_group import MediaGroupBuilder
 
 # Загрузка переменных окружения
 load_dotenv()
