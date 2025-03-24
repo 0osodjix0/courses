@@ -6,6 +6,7 @@ import psycopg2
 logging.basicConfig()
 logger = logging.getLogger('sqlalchemy.engine')
 logger.setLevel(logging.INFO)
+from sqlalchemy import create_engine
 from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
@@ -39,6 +40,13 @@ conn = psycopg2.connect(
     host=result.hostname,
     port=result.port,
     sslmode='require'
+
+DATABASE_URL = os.getenv('DATABASE_URL')
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={'sslmode': 'require'}
+)
+
 
 # Инициализация бота
 bot = Bot(token=TOKEN)
