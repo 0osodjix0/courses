@@ -1,0 +1,41 @@
+# Файлы окружения
+.env
+.env.prod
+
+# Виртуальные окружения
+venv/
+env/
+ENV/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Локальные БД
+*.db
+*.sqlite
+*.sqlite3
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# IDE/Редакторы
+.vscode/
+.idea/
+*.iml
+
+# Heroku
+*.sql
+
+# Пакеты и зависимости
+/dist/
+/build/
+*.egg-info/
