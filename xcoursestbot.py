@@ -29,6 +29,10 @@ load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
+DATABASE_URL = os.getenv('DATABASE_URL').replace("postgres://", "postgresql+psycopg2://")
+
+# Создаем движок
+engine = create_engine(DATABASE_URL, connect_args={'sslmode': 'require'})
 result = urlparse(DATABASE_URL)  
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
