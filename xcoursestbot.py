@@ -6,6 +6,7 @@ import psycopg2
 logging.basicConfig()
 logger = logging.getLogger('sqlalchemy.engine')
 logger.setLevel(logging.INFO)
+from urllib.parse import urlparse
 from sqlalchemy import create_engine
 from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, types, F
@@ -30,6 +31,7 @@ TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+result = urlparse(DATABASE_URL)  
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # Подключаемся с SSL
