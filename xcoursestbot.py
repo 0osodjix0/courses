@@ -5,7 +5,9 @@ import psycopg2
 import random
 from urllib.parse import urlparse
 from contextlib import contextmanager
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
+from aiogram.fsm.strategy import FSMStrategy
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
@@ -1282,20 +1284,35 @@ async def finalize_task(message: Message, state: FSMContext):
     await state.clear()
 
 ### BLOCK 15: STARTUP ###
-async def on_startup(dp: Dispatcher):
+# Инициализация хранилища для FSM
+storage = MemoryStorage()
+
+# Обновленная инициализация диспетчера
+dp = Dispatcher(storage=storage)
+
+async def on_startup():
     logger.info("✅ Бот запущен")
     await bot.send_message(ADMIN_ID, "Бот активен")
+    
+    # Инициализация базы данных при старте
+    db._init_tables()
 
-async def on_shutdown(dp: Dispatcher):
+async def on_shutdown():
     logger.info("🛑 Бот остановлен")
     await bot.send_message(ADMIN_ID, "Бот выключен")
     
-    # Закрываем сессию бота
+    # Закрываем соединения
     await bot.session.close()
-    
-    # Закрываем соединение с БД
     db.close()
 
+async def main():
+    # Регистрируем обработчики событий
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
+    # Запускаем поллинг
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
-    from aiogram import executor
-    executor.start_polling(dp, on_startup=on_startup, on_shutdown=on_shutdown)
+    import asyncio
+    asyncio.run(main())
