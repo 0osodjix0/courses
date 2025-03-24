@@ -2,6 +2,7 @@
 import os
 import logging
 import psycopg2
+import random
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
@@ -14,8 +15,6 @@ from datetime import datetime
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
     ReplyKeyboardRemove
 )
 from aiogram.utils.media_group import MediaGroupBuilder
@@ -26,30 +25,17 @@ TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_URL = os.getenv('DATABASE_URL')
 
+# Проверка переменных окружения
+if not all([TOKEN, ADMIN_ID, DATABASE_URL]):
+    raise ValueError("Не заданы обязательные переменные окружения")
+
 # Парсинг URL базы данных
 parsed_db = urlparse(DATABASE_URL)
-
-# Инициализация подключения к PostgreSQL
-conn = psycopg2.connect(
-    dbname=parsed_db.path[1:],
-    user=parsed_db.username,
-    password=parsed_db.password,
-    host=parsed_db.hostname,
-    port=parsed_db.port,
-    sslmode='require'
-)
-
-# Настройка логгера
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
         self.conn = psycopg2.connect(
-            database=parsed_db.path[1:],
+            dbname=parsed_db.path[1:],
             user=parsed_db.username,
             password=parsed_db.password,
             host=parsed_db.hostname,
@@ -60,7 +46,6 @@ class Database:
         
     def _init_tables(self):
         with self.conn.cursor() as cursor:
-            # Users table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -68,8 +53,6 @@ class Database:
                     current_course INTEGER,
                     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )''')
-
-            # Courses table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS courses (
                     course_id SERIAL PRIMARY KEY,
@@ -77,8 +60,6 @@ class Database:
                     description TEXT,
                     media_id TEXT
                 )''')
-
-            # Modules table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS modules (
                     module_id SERIAL PRIMARY KEY,
@@ -86,8 +67,6 @@ class Database:
                     title TEXT NOT NULL,
                     media_id TEXT
                 )''')
-
-            # Tasks table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_id SERIAL PRIMARY KEY,
@@ -96,8 +75,6 @@ class Database:
                     content TEXT NOT NULL,
                     file_id TEXT
                 )''')
-
-            # Submissions table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS submissions (
                     submission_id SERIAL PRIMARY KEY,
@@ -126,13 +103,10 @@ class Database:
     def close(self):
         self.conn.close()
 
-# Инициализация бота
+# Инициализация объектов
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-# Инициализация базы данных
 db = Database()
-
 pass
 
 ### BLOCK 3: STATES AND KEYBOARDS ###
@@ -159,22 +133,22 @@ def main_menu():
     return builder.as_markup(resize_keyboard=True)
 
 def cancel_button():
-    return types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
-    ])
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel")
+    return builder.as_markup()
 
 
-### BLOCK 4: USER HANDLERS (FIXED) ###
+## BLOCK 4: USER HANDLERS ###
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    with Database() as cursor:
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (message.from_user.id,))
+    with db.cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE user_id = %s", (message.from_user.id,))
         user = cursor.fetchone()
     
     if user:
         await message.answer(f"Добро пожаловать, {user[1]}!", reply_markup=main_menu())
     else:
-        await message.answer("📝 Давай познакомимся! Для начала регистрации введи свое ФИО. Это нужно, чтобы твой наставник мог оценивать задания и давать обратную связь. Напиши своё полное имя, фамилию и отчество::", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("📝 Введите ваше полное ФИО:", reply_markup=ReplyKeyboardRemove())
         await state.set_state(Form.full_name)
 
 @dp.message(Form.full_name)
@@ -184,15 +158,15 @@ async def process_full_name(message: types.Message, state: FSMContext):
         return
     
     try:
-        with Database() as cursor:
+        with db.cursor() as cursor:
             cursor.execute(
-                "INSERT INTO users (user_id, full_name) VALUES (?, ?)",
+                "INSERT INTO users (user_id, full_name) VALUES (%s, %s)",
                 (message.from_user.id, message.text)
             )
-        await message.answer("✅ Регистрация успешно завершена!", reply_markup=main_menu())
+        await message.answer("✅ Регистрация завершена!", reply_markup=main_menu())
         await state.clear()
-    except sqlite3.IntegrityError:
-        await message.answer("❌ Этот пользователь уже зарегистрирован")
+    except psycopg2.IntegrityError:
+        await message.answer("❌ Пользователь уже зарегистрирован")
         await state.clear()
 
 ### BLOCK 4.1: MEDIA HANDLERS ###
@@ -207,73 +181,77 @@ async def handle_media(message: Message, state: FSMContext):
         await state.update_data(media_id=media_id)
     return media_id
 
-### BLOCK 5: COURSE HANDLERS (FIXED) ###
+### BLOCK 5: COURSE HANDLERS ###
 def courses_kb():
-    with Database() as cursor:
+    with db.cursor() as cursor:
         cursor.execute("SELECT course_id, title FROM courses")
         courses = cursor.fetchall()
     
     builder = InlineKeyboardBuilder()
     for course in courses:
         builder.button(
-            text=f"📘 {course[1]}",
+            text=f"📘 {course[1]}", 
             callback_data=f"course_{course[0]}"
         )
     builder.button(text="❌ Отмена", callback_data="cancel")
     builder.adjust(1)
     return builder.as_markup()
 
-@dp.message(F.text == ("📚 Выбрать курс"))
+@dp.message(F.text == "📚 Выбрать курс")
 async def show_courses(message: types.Message):
-    with Database() as cursor:
+    with db.cursor() as cursor:
         cursor.execute(
-            "SELECT courses.title FROM users "
-            "LEFT JOIN courses ON users.current_course = courses.course_id "
-            "WHERE users.user_id = ?", 
+            """SELECT c.title 
+            FROM users u
+            LEFT JOIN courses c ON u.current_course = c.course_id 
+            WHERE u.user_id = %s""", 
             (message.from_user.id,)
         )
         current_course = cursor.fetchone()
     
-    text = "В этом разделе ты можешь выбрать курс, в котором будут модули с заданиями. Выполняй их и отправляй админу на проверку! 🚀 \n\n"
+    text = "📚 Доступные курсы:\n\n"
     if current_course and current_course[0]:
         text += f"🎯 Текущий курс: {current_course[0]}\n\n"
-    text += "👇 Выбери свой:"
+    text += "👇 Выберите курс:"
     
-    await message.answer(
-        text,
-        reply_markup=
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎯 Выбрать курс", callback_data="select_course")]]
-        )
-    )
+    await message.answer(text, reply_markup=courses_kb())
 
-@dp.callback_query(F.data == ("select_course"))
+@dp.callback_query(F.data == "select_course")
 async def select_course_handler(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "📚 Доступные курсы:",
-        reply_markup=courses_kb()
-    )
+    await callback.message.edit_text("📚 Доступные курсы:", reply_markup=courses_kb())
 
-### BLOCK 6: NAVIGATION AND CANCEL ###
-@dp.callback_query(F.data == "cancel")
-async def cancel_handler(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()  # Очищаем состояние
-    
-    # Проверяем, является ли пользователь администратором
-    if str(callback.from_user.id) == ADMIN_ID:
-        # Для админа возвращаемся в админ-меню
-        await callback.message.edit_text("❌ Действие отменено")
-        await callback.message.answer(
-            "Админ-меню:",
-            reply_markup=admin_menu()
-        )
-    else:
-        # Для обычных пользователей возвращаемся в главное меню
-        await callback.message.edit_text("❌ Действие отменено")
-        await callback.message.answer(
-            "Главное меню:",
-            reply_markup=main_menu()
-        )
+
+### BLOCK 6: COURSE SELECTION ###
+@dp.callback_query(F.data.startswith("course_"))
+async def select_course(callback: types.CallbackQuery):
+    try:
+        course_id = int(callback.data.split("_")[1])
+        user_id = callback.from_user.id
+        
+        with db.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET current_course = %s WHERE user_id = %s",
+                (course_id, user_id)
+            )
+            cursor.execute(
+                "SELECT title, media_id FROM courses WHERE course_id = %s",
+                (course_id,)
+            )
+            course = cursor.fetchone()
+        
+        text = f"✅ Вы выбрали курс: {course[0]}\nВыберите модуль:"
+        kb = modules_kb(course_id)
+        
+        if course[1]:
+            await callback.message.delete()
+            await callback.message.answer_photo(course[1], caption=text, reply_markup=kb)
+        else:
+            await callback.message.edit_text(text, reply_markup=kb)
+            
+    except Exception as e:
+        logger.error(f"Ошибка выбора курса: {e}")
+        await callback.answer("❌ Ошибка при выборе курса")
+        
 ### BLOCK 5.1: COURSE SELECTION FIX ###
 @dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
@@ -373,36 +351,29 @@ async def select_course(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("module_"))
 async def module_selected(callback: types.CallbackQuery):
     try:
-        # Исправленный парсинг module_id
         module_id = int(callback.data.split("_")[1])
         
-        with Database() as cursor:
-            # Получаем курс для модуля с проверкой существования
-            cursor.execute("SELECT course_id FROM modules WHERE module_id = ?", (module_id,))
-            course_data = cursor.fetchone()
-            
-            if not course_data:
-                await callback.answer("❌ Модуль не найден")
-                return
-                
-            course_id = course_data[0]
-            
-            # Получаем название модуля с проверкой
-            cursor.execute("SELECT title FROM modules WHERE module_id = ?", (module_id,))
+        with db.cursor() as cursor:  # Используем контекстный менеджер базы данных
+            # Получаем данные модуля
+            cursor.execute(
+                "SELECT course_id, title FROM modules WHERE module_id = %s",
+                (module_id,)
+            )
             module_data = cursor.fetchone()
             
             if not module_data:
-                await callback.answer("❌ Название модуля не найдено")
+                await callback.answer("❌ Модуль не найден")
                 return
                 
-            module_title = module_data[0]
-            
-            # Получаем задания с проверкой
-            cursor.execute("SELECT task_id, title FROM tasks WHERE module_id = ?", (module_id,))
+            course_id, module_title = module_data
+
+            # Получаем задания модуля
+            cursor.execute(
+                "SELECT task_id, title FROM tasks WHERE module_id = %s",
+                (module_id,)
+            )
             tasks = cursor.fetchall()
 
-        # Создаем уникальный идентификатор для callback
-        unique_id = random.randint(1000, 9999)
         builder = InlineKeyboardBuilder()
         
         if tasks:
@@ -417,22 +388,21 @@ async def module_selected(callback: types.CallbackQuery):
             
         builder.button(
             text="🔙 Назад к модулям", 
-            callback_data=f"back_to_modules_{course_id}_{unique_id}"
+            callback_data=f"back_to_modules_{course_id}"
         )
         builder.adjust(1)
 
-        # Редактируем сообщение с проверкой медиа
         try:
             await callback.message.edit_text(
                 f"📂 Модуль: {module_title}\nВыберите задание:",
                 reply_markup=builder.as_markup()
             )
         except Exception as e:
-            logger.error(f"Message edit error: {str(e)}")
+            logger.error(f"Ошибка редактирования сообщения: {str(e)}")
             await callback.answer("⚠️ Ошибка отображения заданий")
 
     except Exception as e:
-        logger.error(f"Module error: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка загрузки модуля: {str(e)}", exc_info=True)
         await callback.answer("❌ Ошибка загрузки модуля")
 
 ### BLOCK 6.1: BACK TO MODULES FIX ###
@@ -1304,32 +1274,23 @@ async def finalize_task(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}")
     await state.clear()
 
-   ### BLOCK 15 (UPDATED): STARTUP ###
-import asyncio
+ ### BLOCK 15: STARTUP ###
+async def on_startup():
+    await bot.send_message(ADMIN_ID, "✅ Бот запущен")
+    logger.info("Бот успешно запущен")
+
+async def on_shutdown():
+    await bot.send_message(ADMIN_ID, "⛔ Бот остановлен")
+    db.close()
+    logger.info("Бот остановлен")
 
 async def main():
-    await on_startup(dp)
+    await on_startup()
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
-        await on_shutdown(dp)
-
-async def on_startup(dp: Dispatcher):
-    logger.info("Бот успешно запущен")
-    await bot.send_message(ADMIN_ID, "✅ Бот запущен")
-
-async def on_shutdown(dp: Dispatcher):
-    logger.info("Бот остановлен")
-    await bot.send_message(ADMIN_ID, "⛔ Бот остановлен")
-    await dp.storage.close()
-    await bot.session.close()
+        await on_shutdown()
 
 if __name__ == "__main__":
-    logger.info("Запуск бота...")
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-    finally:
-        logger.info("Завершение работы")
-        pass 
+    import asyncio
+    asyncio.run(main())
