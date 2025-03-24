@@ -32,6 +32,9 @@ DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+async def health_check(request):
+    return web.Response(text="OK")
+    
 # Настройка логгера
 logging.basicConfig(
     level=logging.INFO,
