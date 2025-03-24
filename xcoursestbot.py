@@ -5,7 +5,7 @@ import psycopg2
 import random
 from urllib.parse import urlparse
 from contextlib import contextmanager
-from aiogram import Bot, Dispatcher, types F
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.strategy import FSMStrategy
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
