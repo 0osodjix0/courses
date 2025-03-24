@@ -8,8 +8,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Скопируйте остальные файлы
-COPY . .
-
 # Укажите команду для запуска приложения
 CMD ["python", "xcoursestbot.py"]
