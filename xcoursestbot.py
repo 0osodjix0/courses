@@ -7,7 +7,6 @@ logging.basicConfig()
 logger = logging.getLogger('sqlalchemy.engine')
 logger.setLevel(logging.INFO)
 from urllib.parse import urlparse
-from sqlalchemy import create_engine
 from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
@@ -30,26 +29,24 @@ load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
-DATABASE_URL = "postgresql+psycopg2://..."
 result = urlparse(DATABASE_URL)  
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
-# Подключаемся с SSL
-conn = psycopg2.connect(  # ← Здесь не хватает закрывающей скобки!
-    dbname=result.path[1:],
-    user=result.username,
-    password=result.password,
-    host=result.hostname,
-    port=result.port,
+# Получаем URL из переменных окружения
+DATABASE_URL = os.getenv('DATABASE_URL')  # Формат: "postgres://user:pass@host:port/dbname"
+
+# Парсим URL
+result = urlparse(DATABASE_URL)
+
+# Подключаемся через psycopg2
+conn = psycopg2.connect(
+    dbname=result.path[1:],      # Например: "d12345..."
+    user=result.username,        # Например: "user"
+    password=result.password,    # Пароль из URL
+    host=result.hostname,        # Например: "ec2-123-456.compute-1.amazonaws.com"
+    port=result.port,            # Например: 5432
     sslmode='require'
-)# )  ← Скобка отсутствует или закомментирована
-
-DATABASE_URL = os.getenv('DATABASE_URL')
-engine = create_engine(
-    DATABASE_URL, 
-    connect_args={'sslmode': 'require'}
 )
-
 
 # Инициализация бота
 bot = Bot(token=TOKEN)
