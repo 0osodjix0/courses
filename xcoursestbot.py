@@ -1,13 +1,9 @@
 ### BLOCK 1: BASE SETUP ###
-import random 
 import os
 import logging
 import psycopg2
-logging.basicConfig()
-logger = logging.getLogger('sqlalchemy.engine')
-logger.setLevel(logging.INFO)
 from urllib.parse import urlparse
-from urllib.parse import urlparse
+from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -28,34 +24,21 @@ from aiogram.utils.media_group import MediaGroupBuilder
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
-DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
-DATABASE_URL = os.getenv('DATABASE_URL').replace("postgres://", "postgresql+psycopg2://")
+DATABASE_URL = os.getenv('DATABASE_URL')
 
-# Создаем движок
-engine = create_engine(DATABASE_URL, connect_args={'sslmode': 'require'})
-result = urlparse(DATABASE_URL)  
-conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+# Парсинг URL базы данных
+parsed_db = urlparse(DATABASE_URL)
 
-# Получаем URL из переменных окружения
-DATABASE_URL = os.getenv('DATABASE_URL')  # Формат: "postgres://user:pass@host:port/dbname"
-
-# Парсим URL
-result = urlparse(DATABASE_URL)
-
-# Подключаемся через psycopg2
+# Инициализация подключения к PostgreSQL
 conn = psycopg2.connect(
-    dbname=result.path[1:],      # Например: "d12345..."
-    user=result.username,        # Например: "user"
-    password=result.password,    # Пароль из URL
-    host=result.hostname,        # Например: "ec2-123-456.compute-1.amazonaws.com"
-    port=result.port,            # Например: 5432
+    dbname=parsed_db.path[1:],
+    user=parsed_db.username,
+    password=parsed_db.password,
+    host=parsed_db.hostname,
+    port=parsed_db.port,
     sslmode='require'
 )
 
-# Инициализация бота
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-    
 # Настройка логгера
 logging.basicConfig(
     level=logging.INFO,
@@ -63,90 +46,94 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def adapt_datetime(dt):
-    return dt.isoformat()
-
-def convert_datimestamp(b):
-    return datetime.fromisoformat(b.decode())
-
-sqlite3.register_adapter(datetime, adapt_datetime)
-sqlite3.register_converter("timestamp", convert_datimestamp)
-
 class Database:
     def __init__(self):
-        self.conn = sqlite3.connect(
-            DATABASE_NAME,
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+        self.conn = psycopg2.connect(
+            database=parsed_db.path[1:],
+            user=parsed_db.username,
+            password=parsed_db.password,
+            host=parsed_db.hostname,
+            port=parsed_db.port,
+            sslmode='require'
         )
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.row_factory = sqlite3.Row
         self._init_tables()
-
+        
     def _init_tables(self):
-        with self.conn:
+        with self.conn.cursor() as cursor:
             # Users table
-            self.conn.execute('''CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                full_name TEXT NOT NULL,
-                current_course INTEGER,
-                registered_at timestamp DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(current_course) REFERENCES courses(course_id) ON DELETE SET NULL
-            )''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    full_name TEXT NOT NULL,
+                    current_course INTEGER,
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )''')
 
             # Courses table
-            self.conn.execute('''CREATE TABLE IF NOT EXISTS courses (
-                course_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT UNIQUE NOT NULL,
-                description TEXT,
-                media_id TEXT
-            )''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS courses (
+                    course_id SERIAL PRIMARY KEY,
+                    title TEXT UNIQUE NOT NULL,
+                    description TEXT,
+                    media_id TEXT
+                )''')
 
             # Modules table
-            self.conn.execute('''CREATE TABLE IF NOT EXISTS modules (
-                module_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                course_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                media_id TEXT,
-                FOREIGN KEY(course_id) REFERENCES courses(course_id) ON DELETE CASCADE
-            )''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS modules (
+                    module_id SERIAL PRIMARY KEY,
+                    course_id INTEGER NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    media_id TEXT
+                )''')
 
             # Tasks table
-            self.conn.execute('''CREATE TABLE IF NOT EXISTS tasks (
-                task_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                module_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                file_id TEXT,
-                FOREIGN KEY(module_id) REFERENCES modules(module_id) ON DELETE CASCADE
-            )''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id SERIAL PRIMARY KEY,
+                    module_id INTEGER NOT NULL REFERENCES modules(module_id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    file_id TEXT
+                )''')
 
-            # Submissions table с улучшенными ограничениями
-            self.conn.execute('''CREATE TABLE IF NOT EXISTS submissions (
-                submission_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                task_id INTEGER NOT NULL,
-                status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
-                score INTEGER CHECK(score BETWEEN 0 AND 100),
-                submitted_at timestamp DEFAULT CURRENT_TIMESTAMP,
-                file_id TEXT,
-                content TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-                FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
-            )''')
-
-    def __enter__(self):
-        return self.conn.cursor()
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type:
-            self.conn.rollback()
-        else:
+            # Submissions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS submissions (
+                    submission_id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    task_id INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+                    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
+                    score INTEGER CHECK(score BETWEEN 0 AND 100),
+                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    file_id TEXT,
+                    content TEXT
+                )''')
             self.conn.commit()
+
+    @contextmanager
+    def cursor(self):
+        cursor = self.conn.cursor()
+        try:
+            yield cursor
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            raise e
+        finally:
+            cursor.close()
+
+    def close(self):
         self.conn.close()
 
-def init_db():
-    # Инициализация уже выполнена в конструкторе Database
-    pass
+# Инициализация бота
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# Инициализация базы данных
+db = Database()
+
+pass
 
 ### BLOCK 3: STATES AND KEYBOARDS ###
 class Form(StatesGroup):
