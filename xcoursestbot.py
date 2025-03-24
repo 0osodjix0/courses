@@ -19,6 +19,13 @@ from aiogram.types import (
 )
 from aiogram.utils.media_group import MediaGroupBuilder
 
+# Инициализация логгера
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 # Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
@@ -1274,23 +1281,21 @@ async def finalize_task(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}")
     await state.clear()
 
- ### BLOCK 15: STARTUP ###
-async def on_startup():
-    await bot.send_message(ADMIN_ID, "✅ Бот запущен")
-    logger.info("Бот успешно запущен")
+### BLOCK 15: STARTUP ###
+async def on_startup(dp: Dispatcher):
+    logger.info("✅ Бот запущен")
+    await bot.send_message(ADMIN_ID, "Бот активен")
 
-async def on_shutdown():
-    await bot.send_message(ADMIN_ID, "⛔ Бот остановлен")
+async def on_shutdown(dp: Dispatcher):
+    logger.info("🛑 Бот остановлен")
+    await bot.send_message(ADMIN_ID, "Бот выключен")
+    
+    # Закрываем сессию бота
+    await bot.session.close()
+    
+    # Закрываем соединение с БД
     db.close()
-    logger.info("Бот остановлен")
-
-async def main():
-    await on_startup()
-    try:
-        await dp.start_polling(bot, skip_updates=True)
-    finally:
-        await on_shutdown()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    from aiogram import executor
+    executor.start_polling(dp, on_startup=on_startup, on_shutdown=on_shutdown)
