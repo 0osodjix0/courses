@@ -30,7 +30,7 @@ load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_NAME = os.getenv('DATABASE_NAME', 'bot.db')
-DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE_URL = "postgresql+psycopg2://..."
 result = urlparse(DATABASE_URL)  
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
