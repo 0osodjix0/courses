@@ -1,20 +1,15 @@
-# Use official Python image as a base
-FROM python:3.12
+# Используйте официальный образ Python как базовый
+FROM python:3.10-slim
 
-# Set the working directory inside the container
+# Установите рабочую директорию
 WORKDIR /app
 
-# Copy the requirements file into the container
+# Скопируйте requirements.txt и установите зависимости
 COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the bot's code
+# Скопируйте остальные файлы
 COPY . .
 
-# Expose the port for webhooks (if needed)
-EXPOSE 8000
-
-# Run the bot
+# Укажите команду для запуска приложения
 CMD ["python", "xcoursestbot.py"]
