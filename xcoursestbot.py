@@ -1305,21 +1305,31 @@ async def finalize_task(message: Message, state: FSMContext):
     await state.clear()
 
    ### BLOCK 15 (UPDATED): STARTUP ###
+from aiogram import executor
+import asyncio
+
+async def on_startup(dp):
+    logger.info("Бот успешно запущен")
+    await bot.send_message(ADMIN_ID, "✅ Бот запущен")
+
+async def on_shutdown(dp):
+    logger.info("Бот остановлен")
+    await bot.send_message(ADMIN_ID, "⛔ Бот остановлен")
+    await bot.close()
+    await dp.storage.close()
+
 if __name__ == "__main__":
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    runner = web.AppRunner(app)
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(runner.setup())
-    site = web.TCPSite(runner, port=8000)
-    loop.run_until_complete(site.start())
-    loop.create_task(start_bot())
-    loop.run_forever()
-    logger.info("Бот запускается...")
+    logger.info("Запуск бота...")
     try:
-        dp.run_polling(bot)
+        executor.start_polling(
+            dp,
+            skip_updates=True,
+            on_startup=on_startup,
+            on_shutdown=on_shutdown
+        )
     except Exception as e:
-        logger.error(f"Ошибка запуска: {e}")
+        logger.error(f"Критическая ошибка: {e}")
     finally:
+        logger.info("Завершение работы")
 
         pass  # Соединение закрывается автоматически через контекстный менеджер
