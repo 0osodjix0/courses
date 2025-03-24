@@ -1285,11 +1285,6 @@ async def finalize_task(message: Message, state: FSMContext):
 
 ### BLOCK 15: STARTUP ###
 # Инициализация хранилища для FSM
-storage = MemoryStorage()
-
-# Обновленная инициализация диспетчера
-dp = Dispatcher(storage=storage)
-
 async def on_startup():
     logger.info("✅ Бот запущен")
     await bot.send_message(ADMIN_ID, "Бот активен")
