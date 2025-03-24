@@ -1305,28 +1305,31 @@ async def finalize_task(message: Message, state: FSMContext):
     await state.clear()
 
    ### BLOCK 15 (UPDATED): STARTUP ###
-async def on_startup(dp):
+import asyncio
+
+async def main():
+    await on_startup(dp)
+    try:
+        await dp.start_polling(bot, skip_updates=True)
+    finally:
+        await on_shutdown(dp)
+
+async def on_startup(dp: Dispatcher):
     logger.info("Бот успешно запущен")
     await bot.send_message(ADMIN_ID, "✅ Бот запущен")
 
-async def on_shutdown(dp):
+async def on_shutdown(dp: Dispatcher):
     logger.info("Бот остановлен")
     await bot.send_message(ADMIN_ID, "⛔ Бот остановлен")
-    await bot.close()
     await dp.storage.close()
+    await bot.session.close()
 
 if __name__ == "__main__":
     logger.info("Запуск бота...")
     try:
-        executor.start_polling(
-            dp,
-            skip_updates=True,
-            on_startup=on_startup,
-            on_shutdown=on_shutdown
-        )
+        asyncio.run(main())
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}")
     finally:
         logger.info("Завершение работы")
-
-        pass  # Соединение закрывается автоматически через контекстный менеджер
+        pass 
