@@ -1297,7 +1297,16 @@ async def finalize_task(message: Message, state: FSMContext):
     await state.clear()
 
    ### BLOCK 15 (UPDATED): STARTUP ###
-if __name__ == '__main__':
+if __name__ == "__main__":
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(runner.setup())
+    site = web.TCPSite(runner, port=8000)
+    loop.run_until_complete(site.start())
+    loop.create_task(start_bot())
+    loop.run_forever()
     logger.info("Бот запускается...")
     try:
         dp.run_polling(bot)
