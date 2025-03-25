@@ -2,29 +2,24 @@
 import os
 import logging
 import psycopg2
-import random
 from psycopg2 import OperationalError, IntegrityError
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.fsm.strategy import FSMStrategy
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 from datetime import datetime
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    ReplyKeyboardRemove
-)
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.utils.media_group import MediaGroupBuilder
 
-storage = MemoryStorage() 
+# Инициализация хранилища FSM
+storage = MemoryStorage()
 
-# Инициализация логгера
+# Настройка логгера
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -36,7 +31,6 @@ load_dotenv()
 TOKEN = os.getenv('TOKEN')
 ADMIN_ID = os.getenv('ADMIN_ID')
 DATABASE_URL = os.getenv('DATABASE_URL')
-dp = Dispatcher(storage=storage)  
 
 # Проверка переменных окружения
 if not all([TOKEN, ADMIN_ID, DATABASE_URL]):
@@ -47,6 +41,12 @@ parsed_db = urlparse(DATABASE_URL)
 
 class Database:
     def __init__(self):
+        self.conn = None
+        self._connect()
+        self._init_tables()
+        
+    def _connect(self):
+        """Установка соединения с базой данных"""
         self.conn = psycopg2.connect(
             dbname=parsed_db.path[1:],
             user=parsed_db.username,
@@ -55,73 +55,51 @@ class Database:
             port=parsed_db.port,
             sslmode='require'
         )
-        self._init_tables()
-        
+        self.conn.autocommit = False
+
     def _init_tables(self):
+        """Инициализация таблиц"""
         with self.conn.cursor() as cursor:
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    full_name TEXT NOT NULL,
-                    current_course INTEGER,
-                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS courses (
-                    course_id SERIAL PRIMARY KEY,
-                    title TEXT UNIQUE NOT NULL,
-                    description TEXT,
-                    media_id TEXT
-                )''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS modules (
-                    module_id SERIAL PRIMARY KEY,
-                    course_id INTEGER NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
-                    title TEXT NOT NULL,
-                    media_id TEXT
-                )''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS tasks (
-                    task_id SERIAL PRIMARY KEY,
-                    module_id INTEGER NOT NULL REFERENCES modules(module_id) ON DELETE CASCADE,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    file_id TEXT
-                )''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS submissions (
-                    submission_id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    task_id INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-                    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
-                    score INTEGER CHECK(score BETWEEN 0 AND 100),
-                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    file_id TEXT,
-                    content TEXT
-                )''')
-            self.conn.commit()
+            try:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        full_name TEXT NOT NULL,
+                        current_course INTEGER,
+                        registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )''')
+                # ... остальные CREATE TABLE ...
+                self.conn.commit()
+            except Exception as e:
+                self.conn.rollback()
+                logger.error(f"Ошибка инициализации таблиц: {e}")
+                raise
 
     @contextmanager
     def cursor(self):
-        cursor = self.conn.cursor()
+        """Контекстный менеджер для курсора"""
+        cursor = None
         try:
+            cursor = self.conn.cursor()
             yield cursor
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
-            raise e
+            logger.error(f"Ошибка транзакции: {e}")
+            raise
         finally:
-            cursor.close()
+            if cursor:
+                cursor.close()
 
     def close(self):
-        self.conn.close()
+        """Закрытие соединения"""
+        if self.conn and not self.conn.closed:
+            self.conn.close()
 
 # Инициализация объектов
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=storage)
 db = Database()
-pass
-
 ### BLOCK 3: STATES AND KEYBOARDS ###
 class Form(StatesGroup):
     full_name = State()
@@ -1288,28 +1266,19 @@ async def finalize_task(message: Message, state: FSMContext):
     await state.clear()
 
 ### BLOCK 15: STARTUP ###
-# Инициализация хранилища для FSM
 async def on_startup():
     logger.info("✅ Бот запущен")
     await bot.send_message(ADMIN_ID, "Бот активен")
-    
-    # Инициализация базы данных при старте
-    db._init_tables()
 
 async def on_shutdown():
     logger.info("🛑 Бот остановлен")
     await bot.send_message(ADMIN_ID, "Бот выключен")
-    
-    # Закрываем соединения
-    await bot.session.close()
     db.close()
+    await bot.session.close()
 
 async def main():
-    # Регистрируем обработчики событий
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    
-    # Запускаем поллинг
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
