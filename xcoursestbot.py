@@ -493,6 +493,11 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
             (user_id, task_id)
             )
 
+@dp.callback_query(F.data.startswith("task_"))
+async def task_selected(callback: types.CallbackQuery):
+    try:
+        task_id = int(callback.data.split("_")[1])
+        user_id = callback.from_user.id
 def task_keyboard(task_id: int, user_id: int):
     builder = InlineKeyboardBuilder()
     
@@ -519,6 +524,14 @@ def task_keyboard(task_id: int, user_id: int):
     except Exception as e:
         logger.error(f"Ошибка выбора задания: {e}")
         await callback.answer("❌ Ошибка загрузки задания")
+
+        await callback.message.edit_reply_markup(
+            reply_markup=task_keyboard(task_id, user_id)
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике задания: {e}")
+        await callback.answer("❌ Произошла ошибка")
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
 async def retry_submission(callback: CallbackQuery, state: FSMContext):
