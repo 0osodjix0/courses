@@ -331,20 +331,20 @@ def modules_kb(course_id: int):
         return InlineKeyboardBuilder().as_markup()
 
 @dp.callback_query(F.data.startswith("task_"))
-async def task_selected(callback: CallbackQuery):
+async def task_selected_handler(callback: types.CallbackQuery, state: FSMContext):
     try:
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
-        
+
         with db.cursor() as cursor:
-            # Выполняем обновленный SQL-запрос
+            # Получаем данные задания и последнюю попытку
             cursor.execute('''
                 SELECT 
                     t.title, 
                     t.content, 
                     t.file_id,
                     t.file_type,
-                    s.status,
+                    COALESCE(s.status, 'not_attempted') as status,
                     s.score
                 FROM tasks t
                 LEFT JOIN submissions s 
@@ -360,21 +360,26 @@ async def task_selected(callback: CallbackQuery):
             await callback.answer("❌ Задание не найдено")
             return
 
-        # Распаковываем данные
         title, content, file_id, file_type, status, score = task_data
         
         # Формируем текст сообщения
         text = f"📝 <b>{title}</b>\n\n{content}"
         
-        # Добавляем статус если есть
-        if status:
-            text += f"\n\nСтатус: {status}"
-            if score is not None:
-                text += f"\nОценка: {score}/100"
+        # Добавляем статус
+        status_messages = {
+            'pending': "⏳ На проверке",
+            'accepted': "✅ Принято",
+            'rejected': "❌ Требует доработки",
+            'not_attempted': "🚫 Не начато"
+        }
+        text += f"\n\nСтатус: {status_messages.get(status, '')}"
+        
+        if score is not None:
+            text += f"\nОценка: {score}/100"
 
-        # Отправляем медиафайл если есть
-        if file_id and file_type:
-            try:
+        # Отправка медиа
+        try:
+            if file_id and file_type:
                 if file_type == 'photo':
                     await callback.message.answer_photo(
                         file_id, 
@@ -387,22 +392,29 @@ async def task_selected(callback: CallbackQuery):
                         caption=text,
                         parse_mode=types.ParseMode.HTML
                     )
-            except Exception as e:
-                logger.error(f"Ошибка отправки медиа: {e}")
-                await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
-        else:
-            await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
+            else:
+                await callback.message.answer(
+                    text, 
+                    parse_mode=types.ParseMode.HTML
+                )
+        except Exception as e:
+            logger.error(f"Ошибка отправки медиа: {e}")
+            await callback.message.answer(
+                "⚠️ Не удалось загрузить вложение задания",
+                parse_mode=types.ParseMode.HTML
+            )
 
-        # Обновляем клавиатуру
+        # Обновление клавиатуры
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
         )
-
         await callback.answer()
 
+    except ValueError:
+        await callback.answer("❌ Некорректный ID задания")
     except Exception as e:
-        logger.error(f"Ошибка показа задания: {str(e)}")
-        await callback.answer("❌ Ошибка загрузки задания")
+        logger.error(f"Ошибка обработки задания: {str(e)}")
+        await callback.answer("❌ Произошла ошибка при загрузке задания")
 
 @dp.callback_query(F.data.startswith("module_"))
 async def module_selected(callback: types.CallbackQuery):
@@ -410,12 +422,18 @@ async def module_selected(callback: types.CallbackQuery):
         module_id = int(callback.data.split("_")[1])
         
         with db.cursor() as cursor:
+            # Получаем информацию о модуле
             cursor.execute(
                 "SELECT course_id, title FROM modules WHERE module_id = %s",
                 (module_id,)
             )
             module_data = cursor.fetchone()
             
+            if not module_data:
+                await callback.answer("❌ Модуль не найден")
+                return
+
+            # Получаем список заданий
             cursor.execute(
                 "SELECT task_id, title FROM tasks WHERE module_id = %s",
                 (module_id,)
@@ -430,20 +448,18 @@ async def module_selected(callback: types.CallbackQuery):
                     text=f"📝 {task[1]}", 
                     callback_data=f"task_{task[0]}"
                 )
+            builder.button(
+                text="🔙 Назад к модулям", 
+                callback_data=f"back_to_modules_{module_data[0]}"
+            )
+            builder.adjust(1)
+            
+            await callback.message.edit_text(
+                f"📂 Модуль: {module_data[1]}\nВыберите задание:",
+                reply_markup=builder.as_markup()
+            )
         else:
             await callback.answer("ℹ️ В этом модуле пока нет заданий")
-            return
-            
-        builder.button(
-            text="🔙 Назад к модулям", 
-            callback_data=f"back_to_modules_{module_data[0]}"
-        )
-        builder.adjust(1)
-
-        await callback.message.edit_text(
-            f"📂 Модуль: {module_data[1]}\nВыберите задание:",
-            reply_markup=builder.as_markup()
-        )
 
     except Exception as e:
         logger.error(f"Ошибка загрузки модуля: {e}")
@@ -451,115 +467,6 @@ async def module_selected(callback: types.CallbackQuery):
 
 class TaskStates(StatesGroup):
     waiting_for_solution = State()
-
-@dp.callback_query(F.data.startswith("task_"))
-async def task_selected(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        task_id = int(callback.data.split("_")[1])
-        
-        with db.cursor() as cursor:
-            cursor.execute(
-                "SELECT title, content, file_type, file_id FROM tasks WHERE task_id = %s",
-                (task_id,)
-            )
-            task = cursor.fetchone()
-
-        text = f"📝 Задание: {task[0]}\n\n{task[1]}"
-        
-        # Отправляем медиа правильного типа
-        if task[2] and task[3]:
-            if task[2] == 'photo':
-                await callback.message.answer_photo(task[3], caption=text)
-            else:
-                await callback.message.answer_document(task[3], caption=text)
-        else:
-            await callback.message.answer(text)
-
-        # Проверка статуса решения
-        with db.cursor() as cursor:
-            cursor.execute(
-                "SELECT status, score FROM submissions WHERE user_id = %s AND task_id = %s",
-                (callback.from_user.id, task_id)
-            )
-            submission = cursor.fetchone()
-
-        # В запросе получения статуса задания:
-        cursor.execute(
-            """SELECT status, score 
-            FROM submissions 
-            WHERE user_id = %s AND task_id = %s 
-            ORDER BY submitted_at DESC 
-            LIMIT 1""",
-            (user_id, task_id)
-            )
-
-@dp.callback_query(F.data.startswith("task_"))
-async def task_selected(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        task_id = int(callback.data.split("_")[1])
-        user_id = callback.from_user.id
-        
-        with db.cursor() as cursor:
-            cursor.execute(
-                """SELECT 
-                    t.title, 
-                    t.content, 
-                    t.file_id,
-                    t.file_type,
-                    s.status,
-                    s.score
-                FROM tasks t
-                LEFT JOIN submissions s 
-                    ON s.task_id = t.task_id 
-                    AND s.user_id = %s
-                WHERE t.task_id = %s
-                ORDER BY s.submitted_at DESC 
-                LIMIT 1""",
-                (user_id, task_id)
-            )
-            task_data = cursor.fetchone()
-
-        if not task_data:
-            await callback.answer("❌ Задание не найдено")
-            return
-
-        title, content, file_id, file_type, status, score = task_data
-        
-        text = f"📝 <b>{title}</b>\n\n{content}"
-        
-        if status:
-            text += f"\n\nСтатус: {status}"
-            if score is not None:
-                text += f"\nОценка: {score}/100"
-
-        if file_id and file_type:
-    try:
-                if file_type == 'photo':
-                    await callback.message.answer_photo(
-                        file_id, 
-                        caption=text,
-                        parse_mode=types.ParseMode.HTML
-                    )
-                else:
-                    await callback.message.answer_document(
-                        file_id,
-                        caption=text,
-                        parse_mode=types.ParseMode.HTML
-                    )
-    except Exception as e:
-                logger.error(f"Ошибка отправки медиа: {e}")
-                await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
-        else:
-            await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
-
-        await callback.message.edit_reply_markup(
-            reply_markup=task_keyboard(task_id, user_id)
-        )
-        await callback.answer()
-
-    except Exception as e:
-        logger.error(f"Ошибка показа задания: {str(e)}")
-        await callback.answer("❌ Ошибка загрузки задания")
 
     
 ### 2. Добавляем новый обработчик ###
