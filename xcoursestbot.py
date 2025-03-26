@@ -166,6 +166,13 @@ class AdminForm(StatesGroup):
     add_task_media = State()
     delete_course = State()
 
+def main_menu() -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📚 Выбрать курс", callback_data="select_course")
+    builder.button(text="🆘 Поддержка", callback_data="support")
+    builder.adjust(2)
+    return builder.as_markup()
+    
 def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
