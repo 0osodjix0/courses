@@ -16,7 +16,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 from datetime import datetime
 from aiogram.enums import ParseMode 
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import (
+    Message, 
+    CallbackQuery, 
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup  # Добавить эту строку
+)
 from aiogram.utils.media_group import MediaGroupBuilder
 
 # Настройка хранилища состояний
