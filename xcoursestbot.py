@@ -563,39 +563,30 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
         
-        with db.conn.cursor() as cursor:
-            # Проверяем существование отклоненного решения
+        with db.cursor() as cursor:
             cursor.execute('''
                 SELECT submission_id FROM submissions
                 WHERE user_id = %s AND task_id = %s AND status = 'rejected'
                 ORDER BY submitted_at DESC LIMIT 1
             ''', (user_id, task_id))
-            
             if not cursor.fetchone():
                 await callback.answer("❌ Нет отклоненных решений для повторной отправки")
                 return
 
-            # Обновляем статус
             cursor.execute('''
                 UPDATE submissions 
                 SET 
                     status = 'pending',
                     score = NULL,
                     submitted_at = NOW()
-                WHERE 
-                    user_id = %s AND 
-                    task_id = %s
-                RETURNING submission_id
+                WHERE user_id = %s AND task_id = %s
             ''', (user_id, task_id))
-            
+        
         await callback.message.answer("🔄 Отправьте исправленное решение:")
         await state.set_state(TaskStates.waiting_for_solution)
         await state.update_data(task_id=task_id)
         await callback.answer()
 
-    except OperationalError as e:
-        logger.error(f"Database error: {str(e)}")
-        await callback.answer("❌ Ошибка подключения к базе")
     except Exception as e:
         logger.error(f"Retry submission error: {str(e)}")
         await callback.answer("❌ Ошибка повторной отправки")
@@ -611,15 +602,17 @@ async def process_solution(message: Message, state: FSMContext):
         file_ids = []
         content = None
         
-        # Обработка медиа
         if message.content_type == 'text':
             content = message.text
-        elif message.document:
-            file_ids.append(f"doc:{message.document.file_id}")
         elif message.photo:
-            file_ids.append(f"photo:{message.photo[-1].file_id}")
+            file_ids = [f"photo:{photo.file_id}" for photo in message.photo]
+        elif message.document:
+            file_ids = [f"doc:{message.document.file_id}"]
 
-        # Обновляем существующую запись
+        if not content and not file_ids:
+            await message.answer("❌ Пожалуйста, прикрепите файл или напишите текст решения")
+            return
+
         with db.cursor() as cursor:
             cursor.execute('''
                 UPDATE submissions 
@@ -631,16 +624,14 @@ async def process_solution(message: Message, state: FSMContext):
                 WHERE 
                     user_id = %s AND 
                     task_id = %s
-                RETURNING submission_id
-            ''', (content, ",".join(file_ids), user_id, task_id))
+            ''', (content, ",".join(file_ids) if file_ids else None, user_id, task_id))
 
             if cursor.rowcount == 0:
-                # Создаем новую запись если не нашли для обновления
                 cursor.execute('''
                     INSERT INTO submissions 
                     (user_id, task_id, content, file_id)
                     VALUES (%s, %s, %s, %s)
-                ''', (user_id, task_id, content, ",".join(file_ids)))
+                ''', (user_id, task_id, content, ",".join(file_ids) if file_ids else None))
 
         await message.answer("✅ Решение обновлено! Ожидайте проверки.")
         await notify_admin(task_id, user_id)
@@ -848,7 +839,7 @@ def main_menu() -> types.InlineKeyboardMarkup:
 
 def admin_menu():
     # Создаем клавиатуру для админ-меню
-    builder = ReplyKeyboardBuilder()
+    builder = InlineKeyboardBuilder()
     
     # Список кнопок администратора
     admin_buttons = [
