@@ -496,7 +496,6 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("task_"))
 async def task_selected_handler(callback: types.CallbackQuery):
     try:
-        # Основная логика обработки
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
 
@@ -518,7 +517,8 @@ async def task_selected_handler(callback: types.CallbackQuery):
                 ORDER BY s.submitted_at DESC
                 LIMIT 1
                 """,
-                (user_id, task_id)
+                (user_id, task_id)  # Исправлено: добавлена закрывающая скобка
+            )
             task_data = cursor.fetchone()
 
         if not task_data:
@@ -555,6 +555,8 @@ async def task_selected_handler(callback: types.CallbackQuery):
 
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
+        )  # Исправлено: добавлена закрывающая скобка
+
         await callback.answer()
 
     except ValueError as ve:
@@ -576,7 +578,8 @@ def task_keyboard(task_id: int, user_id: int) -> types.InlineKeyboardMarkup:
                 ORDER BY submitted_at DESC 
                 LIMIT 1
                 """,
-                (user_id, task_id))
+                (user_id, task_id)
+            )
             submission = cursor.fetchone()
 
         if submission and submission[0] == 'rejected':
@@ -594,7 +597,7 @@ def task_keyboard(task_id: int, user_id: int) -> types.InlineKeyboardMarkup:
         builder.adjust(1)
 
     return builder.as_markup()
-        
+    
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
 async def retry_submission(callback: CallbackQuery, state: FSMContext):
