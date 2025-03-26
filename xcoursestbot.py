@@ -484,14 +484,14 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
             submission = cursor.fetchone()
 
         # В запросе получения статуса задания:
-                cursor.execute(
-                       """SELECT status, score 
-                       FROM submissions 
-                       WHERE user_id = %s AND task_id = %s 
-                       ORDER BY submitted_at DESC 
-                       LIMIT 1""",
-                       (user_id, task_id)
-                      )
+        cursor.execute(
+            """SELECT status, score 
+            FROM submissions 
+            WHERE user_id = %s AND task_id = %s 
+            ORDER BY submitted_at DESC 
+            LIMIT 1""",
+            (user_id, task_id)
+            )
 
 def task_keyboard(task_id: int, user_id: int):
     builder = InlineKeyboardBuilder()
