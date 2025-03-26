@@ -494,14 +494,16 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
             )
 
 @dp.callback_query(F.data.startswith("task_"))
-async def task_selected(callback: types.CallbackQuery):
+async def task_selected_handler(callback: types.CallbackQuery):
     try:
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
         
+        # Получаем данные задания
         with db.cursor() as cursor:
             cursor.execute(
-                """SELECT 
+                """
+                SELECT 
                     t.title, 
                     t.content, 
                     t.file_id,
@@ -514,52 +516,59 @@ async def task_selected(callback: types.CallbackQuery):
                     AND s.user_id = %s
                 WHERE t.task_id = %s
                 ORDER BY s.submitted_at DESC
-                LIMIT 1""",
+                LIMIT 1
+                """,
                 (user_id, task_id)
-            )
             task_data = cursor.fetchone()
 
         if not task_data:
-            await callback.answer("❌ Задание не найдено")
+            await callback.answer("🚫 Задание не найдено")
             return
 
+        # Формируем сообщение
         title, content, file_id, file_type, status, score = task_data
-        text = f"📝 <b>{title}</b>\n\n{content}"
+        response_text = f"📌 <b>{title}</b>\n\n{content}"
         
         if status:
-            text += f"\n\nСтатус: {status}"
+            response_text += f"\n\nСтатус: {status}"
             if score is not None:
-                text += f"\nОценка: {score}/100"
+                response_text += f"\nОценка: {score}/100"
 
-        if file_id and file_type:
-            try:
+        # Отправляем медиа
+        try:
+            if file_id and file_type:
                 if file_type == 'photo':
                     await callback.message.answer_photo(
                         file_id, 
-                        caption=text,
+                        caption=response_text,
                         parse_mode=types.ParseMode.HTML
                     )
                 else:
                     await callback.message.answer_document(
                         file_id,
-                        caption=text,
+                        caption=response_text,
                         parse_mode=types.ParseMode.HTML
                     )
-            except Exception as media_error:
-                logger.error(f"Media error: {media_error}")
-                await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
-        else:
-            await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
+            else:
+                await callback.message.answer(response_text, parse_mode=types.ParseMode.HTML)
+        except Exception as media_error:
+            logger.error(f"Media send error: {media_error}")
+            await callback.message.answer(response_text, parse_mode=types.ParseMode.HTML)
 
+        # Обновляем клавиатуру
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
         )
 
         await callback.answer()
 
+    except ValueError as ve:
+        logger.error(f"Invalid task ID format: {ve}")
+        await callback.answer("❌ Ошибка формата задания")
+        
     except Exception as e:
-        logger.error(f"Task handler error: {e}")
-        await callback.answer("❌ Ошибка загрузки задания")
+        logger.error(f"Task handler error: {str(e)}")
+        await callback.answer("⛔ Произошла ошибка при загрузке задания")
         
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
