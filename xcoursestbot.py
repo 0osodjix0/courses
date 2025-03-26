@@ -80,6 +80,11 @@ class Database:
                         title TEXT NOT NULL,
                         media_id TEXT
                     )''')
+                cursor.execute('''
+                ALTER TABLE tasks 
+                ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
+                     ''')
+                self.conn.commit()
 
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS tasks (
@@ -90,7 +95,6 @@ class Database:
                         file_id TEXT
                     )''')
 
-                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS submissions (
                         submission_id SERIAL PRIMARY KEY,
                         user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -160,6 +164,29 @@ def cancel_button():
     builder.button(text="❌ Отмена", callback_data="cancel")
     return builder.as_markup()
 
+def support_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📨 Написать в поддержку", url=f"tg://user?id={ADMIN_ID}")
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+@dp.message(F.text == "🆘 Поддержка")
+async def support_handler(message: Message):
+    text = (
+        "🛠 Техническая поддержка\n\n"
+        "Если у вас возникли проблемы:\n"
+        "1. Опишите подробно свой вопрос\n"
+        "2. Приложите скриншоты (если нужно)\n"
+        "3. Нажмите кнопку ниже для связи"
+    )
+    await message.answer(text, reply_markup=support_keyboard())
+
+@dp.callback_query(F.data == "main_menu")
+async def back_to_main_menu(callback: CallbackQuery):
+    await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
+
+    
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     with db.cursor() as cursor:
@@ -190,12 +217,12 @@ async def process_full_name(message: types.Message, state: FSMContext):
         await message.answer("❌ Пользователь уже зарегистрирован")
         await state.clear()
 
-async def handle_media(message: Message, state: FSMContext):
-    media_id = None
+async def handle_media(message: Message):
     if message.photo:
-        media_id = message.photo[-1].file_id
+        return {'type': 'photo', 'file_id': message.photo[-1].file_id}
     elif message.document:
-        media_id = message.document.file_id
+        return {'type': 'document', 'file_id': message.document.file_id}
+    return None
     
     if media_id:
         await state.update_data(media_id=media_id)
@@ -352,30 +379,35 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
         
         with db.cursor() as cursor:
             cursor.execute(
-                "SELECT title, content, file_id FROM tasks WHERE task_id = %s",
+                "SELECT title, content, file_type, file_id FROM tasks WHERE task_id = %s",
                 (task_id,)
             )
             task = cursor.fetchone()
-            
+
+        text = f"📝 Задание: {task[0]}\n\n{task[1]}"
+        
+        # Отправляем медиа правильного типа
+        if task[2] and task[3]:
+            if task[2] == 'photo':
+                await callback.message.answer_photo(task[3], caption=text)
+            else:
+                await callback.message.answer_document(task[3], caption=text)
+        else:
+            await callback.message.answer(text)
+
+        # Проверка статуса решения
+        with db.cursor() as cursor:
             cursor.execute(
                 "SELECT status, score FROM submissions WHERE user_id = %s AND task_id = %s",
                 (callback.from_user.id, task_id)
             )
             submission = cursor.fetchone()
 
-        text = f"📝 Задание: {task[0]}\n\n{task[1]}"
-        
-        if task[2]:
-            await callback.message.answer_document(task[2])
-        
         if submission:
-            text += f"\n\nСтатус: {submission[0]}\nОценка: {submission[1] or 'нет'}"
-            await callback.message.answer(text)
+            status_text = f"\n\nСтатус: {submission[0]}\nОценка: {submission[1] or 'нет'}"
+            await callback.message.answer(status_text)
         else:
-            await callback.message.answer(
-                text + "\n\nОтправьте ваше решение:",
-                reply_markup=cancel_button()
-            )
+            await callback.message.answer("Отправьте ваше решение:", reply_markup=cancel_button())
             await state.set_state(TaskStates.waiting_for_solution)
             await state.update_data(task_id=task_id)
 
@@ -830,13 +862,13 @@ async def process_task_content(message: Message, state: FSMContext):
 
 @dp.message(AdminForm.add_task_media, F.content_type.in_({'document', 'photo'}))
 async def process_task_media(message: Message, state: FSMContext):
-    file_id = message.document.file_id if message.document else message.photo[-1].file_id
+    media = await handle_media(message)
     data = await state.get_data()
     
     with db.cursor() as cursor:
         cursor.execute(
-            "INSERT INTO tasks (module_id, title, content, file_id) VALUES (%s, %s, %s, %s)",
-            (data['module_id'], data['title'], data['content'], file_id)
+            "INSERT INTO tasks (module_id, title, content, file_type, file_id) VALUES (%s, %s, %s, %s, %s)",
+            (data['module_id'], data['title'], data['content'], media['type'], media['file_id'])
         )
     
     await message.answer("✅ Задание создано!", reply_markup=admin_menu())
