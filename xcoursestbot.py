@@ -3,6 +3,8 @@ import logging
 import random
 import psycopg2
 from psycopg2 import OperationalError, IntegrityError
+from aiogram.enums import ParseMode
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
@@ -159,12 +161,20 @@ class AdminForm(StatesGroup):
     add_task_media = State()
     delete_course = State()
 
-def main_menu():
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="📚 Выбрать курс")
-    builder.button(text="🆘 Поддержка")
+def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
+    builder.button(text="🔄 Отправить исправление", callback_data=f"retry_{task_id}")
+    builder.button(text="🔙 Назад к модулю", callback_data=f"back_to_module_{task_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def main_menu() -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📚 Выбрать курс", callback_data="select_course")
+    builder.button(text="🆘 Поддержка", callback_data="support")
     builder.adjust(2)
-    return builder.as_markup(resize_keyboard=True)
+    return builder.as_markup()
 
 def cancel_button():
     builder = InlineKeyboardBuilder()
@@ -191,7 +201,10 @@ async def support_handler(message: Message):
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main_menu(callback: CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
+    await callback.message.edit_text(
+        "Главное меню:",
+        reply_markup=main_menu(),
+        parse_mode=ParseMode.HTML
 
     
 @dp.message(Command("start"))
@@ -332,13 +345,12 @@ def modules_kb(course_id: int):
         return InlineKeyboardBuilder().as_markup()
 
 @dp.callback_query(F.data.startswith("task_"))
-async def task_selected_handler(callback: types.CallbackQuery, state: FSMContext):
+async def task_selected_handler(callback: types.CallbackQuery):
     try:
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
-
+        
         with db.cursor() as cursor:
-            # Получаем данные задания и последнюю попытку
             cursor.execute('''
                 SELECT 
                     t.title, 
@@ -363,20 +375,20 @@ async def task_selected_handler(callback: types.CallbackQuery, state: FSMContext
 
         title, content, file_id, file_type, status, score = task_data
         
-        # Формируем текст сообщения
         text = f"📝 <b>{title}</b>\n\n{content}"
         
-        # Добавляем статус
-        status_messages = {
+        # Статус решения
+        status_text = {
             'pending': "⏳ На проверке",
             'accepted': "✅ Принято",
             'rejected': "❌ Требует доработки",
             'not_attempted': "🚫 Не начато"
-        }
-        text += f"\n\nСтатус: {status_messages.get(status, '')}"
+        }.get(status, "")
         
-        if score is not None:
-            text += f"\nОценка: {score}/100"
+        if status_text:
+            text += f"\n\nСтатус: {status_text}"
+            if score is not None:
+                text += f"\nОценка: {score}/100"
 
         # Отправка медиа
         try:
@@ -385,38 +397,36 @@ async def task_selected_handler(callback: types.CallbackQuery, state: FSMContext
                     await callback.message.answer_photo(
                         file_id, 
                         caption=text,
-                        parse_mode="HTML"  # Исправлено здесь
+                        parse_mode=ParseMode.HTML
                     )
                 else:
                     await callback.message.answer_document(
                         file_id,
                         caption=text,
-                        parse_mode="HTML"  # И здесь
+                        parse_mode=ParseMode.HTML
                     )
             else:
                 await callback.message.answer(
                     text, 
-                    parse_mode="HTML"  # И здесь
+                    parse_mode=ParseMode.HTML
                 )
         except Exception as e:
             logger.error(f"Ошибка отправки медиа: {e}")
             await callback.message.answer(
                 "⚠️ Не удалось загрузить вложение задания",
-                parse_mode="HTML"  # И здесь
+                parse_mode=ParseMode.HTML
             )
 
         # Обновление клавиатуры
         await callback.message.edit_reply_markup(
-            reply_markup=task_keyboard(task_id, user_id)  # Убедитесь что это Inline клавиатура
+            reply_markup=task_keyboard(task_id)
         )
 
         await callback.answer()
 
-    except ValueError:
-        await callback.answer("❌ Некорректный ID задания")
     except Exception as e:
-        logger.error(f"Ошибка обработки задания: {str(e)}")
-        await callback.answer("❌ Произошла ошибка при загрузке задания")
+        logger.error(f"Ошибка показа задания: {str(e)}")
+        await callback.answer("❌ Ошибка загрузки задания")
 
 @dp.callback_query(F.data.startswith("module_"))
 async def module_selected(callback: types.CallbackQuery):
@@ -470,7 +480,62 @@ async def module_selected(callback: types.CallbackQuery):
 class TaskStates(StatesGroup):
     waiting_for_solution = State()
 
+@dp.callback_query(F.data.startswith("back_to_module_"))
+async def back_to_module(callback: CallbackQuery):
+    task_id = int(callback.data.split("_")[-1])
     
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT m.module_id 
+            FROM tasks t
+            JOIN modules m ON t.module_id = m.module_id
+            WHERE t.task_id = %s
+        ''', (task_id,))
+        module_id = cursor.fetchone()[0]
+    
+    await module_selected(callback, module_id)
+
+async def module_selected(callback: CallbackQuery, module_id: int):
+    try:
+        with db.cursor() as cursor:
+            cursor.execute(
+                "SELECT course_id, title FROM modules WHERE module_id = %s",
+                (module_id,)
+            )
+            module_data = cursor.fetchone()
+            
+            cursor.execute(
+                "SELECT task_id, title FROM tasks WHERE module_id = %s",
+                (module_id,)
+            )
+            tasks = cursor.fetchall()
+
+        builder = InlineKeyboardBuilder()
+        
+        if tasks:
+            for task in tasks:
+                builder.button(
+                    text=f"📝 {task[1]}", 
+                    callback_data=f"task_{task[0]}"
+                )
+            builder.button(
+                text="🔙 Назад к курсу", 
+                callback_data=f"back_to_course_{module_data[0]}"
+            )
+            builder.adjust(1)
+            
+            await callback.message.edit_text(
+                f"📂 Модуль: {module_data[1]}\nВыберите задание:",
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+
+    except Exception as e:
+        logger.error(f"Ошибка загрузки модуля: {e}")
+        await callback.answer("❌ Ошибка загрузки модуля")
+
+
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
 async def retry_submission(callback: CallbackQuery, state: FSMContext):
@@ -478,32 +543,39 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
         
-        # Проверяем существующее решение
-        with db.cursor() as cursor:
+        with db.conn.cursor() as cursor:
+            # Проверяем существование отклоненного решения
+            cursor.execute('''
+                SELECT submission_id FROM submissions
+                WHERE user_id = %s AND task_id = %s AND status = 'rejected'
+                ORDER BY submitted_at DESC LIMIT 1
+            ''', (user_id, task_id))
+            
+            if not cursor.fetchone():
+                await callback.answer("❌ Нет отклоненных решений для повторной отправки")
+                return
+
+            # Обновляем статус
             cursor.execute('''
                 UPDATE submissions 
                 SET 
                     status = 'pending',
                     score = NULL,
-                    content = NULL,
-                    file_id = NULL,
                     submitted_at = NOW()
                 WHERE 
                     user_id = %s AND 
-                    task_id = %s AND 
-                    status = 'rejected'
+                    task_id = %s
                 RETURNING submission_id
             ''', (user_id, task_id))
             
-            if cursor.rowcount == 0:
-                await callback.answer("❌ Нет решения для повторной отправки")
-                return
-
         await callback.message.answer("🔄 Отправьте исправленное решение:")
         await state.set_state(TaskStates.waiting_for_solution)
         await state.update_data(task_id=task_id)
         await callback.answer()
 
+    except OperationalError as e:
+        logger.error(f"Database error: {str(e)}")
+        await callback.answer("❌ Ошибка подключения к базе")
     except Exception as e:
         logger.error(f"Retry submission error: {str(e)}")
         await callback.answer("❌ Ошибка повторной отправки")
@@ -695,8 +767,23 @@ def admin_menu():
         ("➕ Добавить модуль", "add_module"),
         ("📌 Добавить задание", "add_task"),
         ("👥 Пользователи", "list_users"),
-        ("🔙 В главное меню", "main_menu")
+        ("🔙 Назад", "admin_back")
     ]
+    
+    builder = ReplyKeyboardBuilder()
+    for text, _ in commands:
+        builder.button(text=text)
+    builder.adjust(2, 2, 2, 1)
+    return builder.as_markup(resize_keyboard=True)
+
+# 3. Обработчик кнопки "Назад" в админ-меню
+@dp.message(F.text == "🔙 Назад")
+async def admin_back_handler(message: Message, state: FSMContext):
+    if str(message.from_user.id) != ADMIN_ID:
+        return
+    
+    await state.clear()
+    await message.answer("Админ-меню:", reply_markup=admin_menu())
     
     builder = ReplyKeyboardBuilder()
     for text, _ in commands:
@@ -850,12 +937,22 @@ async def add_course_start(message: Message, state: FSMContext):
 
 @dp.message(AdminForm.add_course_title)
 async def process_course_title(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     await state.update_data(title=message.text)
     await message.answer("Введите описание курса:")
     await state.set_state(AdminForm.add_course_description)
 
 @dp.message(AdminForm.add_course_description)
 async def process_course_desc(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     await state.update_data(description=message.text)
     await message.answer("Отправьте обложку курса (фото/документ) или /skip")
     await state.set_state(AdminForm.add_course_media)
@@ -878,20 +975,41 @@ async def process_course_media(message: Message, state: FSMContext):
     await state.clear()
 
 @dp.message(AdminForm.add_course_media, Command('skip'))
-async def skip_course_media(message: Message, state: FSMContext):
-    data = await state.get_data()
+async def process_course_media(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
     
-    try:
-        with db.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO courses (title, description) VALUES (%s, %s)",
-                (data['title'], data['description'])
-            )
-        await message.answer("✅ Курс создан без медиа!", reply_markup=admin_menu())
-    except IntegrityError:
-        await message.answer("❌ Курс с таким названием уже существует!")
-    
-    await state.clear()
+    if message.text == "/skip":
+        data = await state.get_data()
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO courses (title, description) VALUES (%s, %s)",
+                    (data['title'], data['description'])
+                )
+            await message.answer("✅ Курс создан без медиа!", reply_markup=admin_menu())
+        except IntegrityError:
+            await message.answer("❌ Курс с таким названием уже существует!", reply_markup=admin_menu())
+        await state.clear()
+        return
+
+    media = await handle_media(message)
+    if media:
+        data = await state.get_data()
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO courses (title, description, media_id) VALUES (%s, %s, %s)",
+                    (data['title'], data['description'], media['file_id'])
+                )
+            await message.answer("✅ Курс успешно создан!", reply_markup=admin_menu())
+        except IntegrityError:
+            await message.answer("❌ Курс с таким названием уже существует!", reply_markup=admin_menu())
+        await state.clear()
+    else:
+        await message.answer("❌ Отправьте фото или документ для обложки курса")
 
 ### BLOCK 7: MODULE AND TASK CREATION ###
 
@@ -913,6 +1031,19 @@ async def add_module_start(message: Message, state: FSMContext):
     
     await message.answer("Выберите курс для модуля:", reply_markup=builder.as_markup())
 
+@dp.message(Command("cancel"))
+@dp.message(F.text.lower() == "отмена")
+async def cancel_action(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        return
+    
+    await state.clear()
+    await message.answer(
+        "Действие отменено",
+        reply_markup=admin_menu() if str(message.from_user.id) == ADMIN_ID else main_menu()
+    )
+    
 @dp.callback_query(F.data.startswith("add_module_"))
 async def select_course_for_module(callback: CallbackQuery, state: FSMContext):
     course_id = int(callback.data.split("_")[2])
@@ -922,23 +1053,53 @@ async def select_course_for_module(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminForm.add_module_title)
 async def process_module_title(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     await state.update_data(title=message.text)
     await message.answer("Отправьте медиа для модуля или /skip")
     await state.set_state(AdminForm.add_module_media)
 
-@dp.message(AdminForm.add_module_media, F.content_type.in_({'photo', 'document'}))
+
+@dp.message(AdminForm.add_module_media)
 async def process_module_media(message: Message, state: FSMContext):
-    media_id = await handle_media(message, state)
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     data = await state.get_data()
-    
-    with db.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO modules (course_id, title, media_id) VALUES (%s, %s, %s)",
-            (data['course_id'], data['title'], media_id)
-        )
-    
-    await message.answer("✅ Модуль создан!", reply_markup=admin_menu())
-    await state.clear()
+    if message.text == "/skip":
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO modules (course_id, title) VALUES (%s, %s)",
+                    (data['course_id'], data['title'])
+                )
+            await message.answer("✅ Модуль создан!", reply_markup=admin_menu())
+        except Exception as e:
+            logger.error(f"Ошибка создания модуля: {e}")
+            await message.answer("❌ Ошибка создания модуля")
+        await state.clear()
+        return
+
+    media = await handle_media(message)
+    if media:
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO modules (course_id, title, media_id) VALUES (%s, %s, %s)",
+                    (data['course_id'], data['title'], media['file_id'])
+                )
+            await message.answer("✅ Модуль создан с медиа!", reply_markup=admin_menu())
+        except Exception as e:
+            logger.error(f"Ошибка создания модуля: {e}")
+            await message.answer("❌ Ошибка создания модуля")
+        await state.clear()
+    else:
+        await message.answer("❌ Отправьте фото или документ для модуля")
 
 @dp.message(AdminForm.add_module_media, Command('skip'))
 async def skip_module_media(message: Message, state: FSMContext):
@@ -994,15 +1155,26 @@ async def select_module_task(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminForm.add_task_title)
 async def process_task_title(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     await state.update_data(title=message.text)
     await message.answer("Введите описание задания:")
     await state.set_state(AdminForm.add_task_content)
 
 @dp.message(AdminForm.add_task_content)
 async def process_task_content(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     await state.update_data(content=message.text)
     await message.answer("Отправьте файл задания или /skip")
     await state.set_state(AdminForm.add_task_media)
+
 
 @dp.message(AdminForm.add_task_media, F.content_type.in_({'document', 'photo'}))
 async def process_task_media(message: Message, state: FSMContext):
@@ -1019,18 +1191,42 @@ async def process_task_media(message: Message, state: FSMContext):
     await state.clear()
 
 @dp.message(AdminForm.add_task_media, Command('skip'))
-async def skip_task_media(message: Message, state: FSMContext):
+async def process_task_media(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
+    
     data = await state.get_data()
-    
-    with db.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO tasks (module_id, title, content) VALUES (%s, %s, %s)",
-            (data['module_id'], data['title'], data['content'])
-        )
-    
-    await message.answer("✅ Задание создано без файла!", reply_markup=admin_menu())
-    await state.clear()
+    if message.text == "/skip":
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO tasks (module_id, title, content) VALUES (%s, %s, %s)",
+                    (data['module_id'], data['title'], data['content'])
+                )
+            await message.answer("✅ Задание создано!", reply_markup=admin_menu())
+        except Exception as e:
+            logger.error(f"Ошибка создания задания: {e}")
+            await message.answer("❌ Ошибка создания задания")
+        await state.clear()
+        return
 
+    media = await handle_media(message)
+    if media:
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO tasks (module_id, title, content, file_id, file_type) VALUES (%s, %s, %s, %s, %s)",
+                    (data['module_id'], data['title'], data['content'], media['file_id'], media['type'])
+                )
+            await message.answer("✅ Задание создано с файлом!", reply_markup=admin_menu())
+        except Exception as e:
+            logger.error(f"Ошибка создания задания: {e}")
+            await message.answer("❌ Ошибка создания задания")
+        await state.clear()
+    else:
+        await message.answer("❌ Отправьте файл задания или /skip")
 ### BLOCK 9: UTILITY HANDLERS ###
 
 @dp.callback_query(F.data == "cancel")
