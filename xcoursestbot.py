@@ -13,6 +13,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 from datetime import datetime
+from aiogram.enums import ParseMode 
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.utils.media_group import MediaGroupBuilder
 
@@ -384,30 +385,31 @@ async def task_selected_handler(callback: types.CallbackQuery, state: FSMContext
                     await callback.message.answer_photo(
                         file_id, 
                         caption=text,
-                        parse_mode=types.ParseMode.HTML
+                        parse_mode="HTML"  # Исправлено здесь
                     )
                 else:
                     await callback.message.answer_document(
                         file_id,
                         caption=text,
-                        parse_mode=types.ParseMode.HTML
+                        parse_mode="HTML"  # И здесь
                     )
             else:
                 await callback.message.answer(
                     text, 
-                    parse_mode=types.ParseMode.HTML
+                    parse_mode="HTML"  # И здесь
                 )
         except Exception as e:
             logger.error(f"Ошибка отправки медиа: {e}")
             await callback.message.answer(
                 "⚠️ Не удалось загрузить вложение задания",
-                parse_mode=types.ParseMode.HTML
+                parse_mode="HTML"  # И здесь
             )
 
         # Обновление клавиатуры
         await callback.message.edit_reply_markup(
-            reply_markup=task_keyboard(task_id, user_id)
+            reply_markup=task_keyboard(task_id, user_id)  # Убедитесь что это Inline клавиатура
         )
+
         await callback.answer()
 
     except ValueError:
