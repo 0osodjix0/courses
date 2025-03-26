@@ -174,13 +174,6 @@ def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
-def main_menu() -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📚 Выбрать курс", callback_data="select_course")
-    builder.button(text="🆘 Поддержка", callback_data="support")
-    builder.adjust(2)
-    return builder.as_markup()
-
 def cancel_button():
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="cancel")
