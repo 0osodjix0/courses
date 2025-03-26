@@ -494,18 +494,16 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
             )
 
 @dp.callback_query(F.data.startswith("task_"))
-async def task_selected_handler(callback: types.CallbackQuery):
+async def task_selected(callback: types.CallbackQuery, state: FSMContext):
     try:
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
-
-        # Получение данных задания
+        
         with db.cursor() as cursor:
             cursor.execute(
-                """
-                SELECT 
-                    t.title,
-                    t.content,
+                """SELECT 
+                    t.title, 
+                    t.content, 
                     t.file_id,
                     t.file_type,
                     s.status,
@@ -515,60 +513,54 @@ async def task_selected_handler(callback: types.CallbackQuery):
                     ON s.task_id = t.task_id 
                     AND s.user_id = %s
                 WHERE t.task_id = %s
-                ORDER BY s.submitted_at DESC
-                LIMIT 1
-                """,
-                (user_id, task_id)  # ✅ Исправлено: закрывающая скобка
-            )  # ✅ Исправлено: закрывающая скобка для execute()
+                ORDER BY s.submitted_at DESC 
+                LIMIT 1""",
+                (user_id, task_id)
+            )
             task_data = cursor.fetchone()
 
         if not task_data:
-            await callback.answer("🚫 Задание не найдено")
+            await callback.answer("❌ Задание не найдено")
             return
 
-        # Формирование ответа
         title, content, file_id, file_type, status, score = task_data
-        response_text = f"📌 <b>{title}</b>\n\n{content}"
+        
+        text = f"📝 <b>{title}</b>\n\n{content}"
         
         if status:
-            response_text += f"\n\nСтатус: {status.capitalize()}"
+            text += f"\n\nСтатус: {status}"
             if score is not None:
-                response_text += f"\nОценка: {score}/100"
+                text += f"\nОценка: {score}/100"
 
-        # Отправка медиа
-        try:
-            if file_id and file_type:
-                method = (
-                    callback.message.answer_photo 
-                    if file_type == 'photo' 
-                    else callback.message.answer_document
-                )
-                await method(
-                    file_id,
-                    caption=response_text,
-                    parse_mode=types.ParseMode.HTML
-                )
-            else:
-                await callback.message.answer(
-                    response_text, 
-                    parse_mode=types.ParseMode.HTML
-                )
-        except Exception as media_error:
-            logger.error(f"Media error: {media_error}")
-            await callback.message.answer(response_text)
+        if file_id and file_type:
+            try:
+                if file_type == 'photo':
+                    await callback.message.answer_photo(
+                        file_id, 
+                        caption=text,
+                        parse_mode=types.ParseMode.HTML
+                    )
+                else:
+                    await callback.message.answer_document(
+                        file_id,
+                        caption=text,
+                        parse_mode=types.ParseMode.HTML
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка отправки медиа: {e}")
+                await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
+        else:
+            await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
 
-        # Обновление интерфейса
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
-        )  # ✅ Исправлено: закрывающая скобка
+        )
         await callback.answer()
 
-    except ValueError as ve:
-        logger.error(f"Invalid task ID: {ve}")
-        await callback.answer("❌ Ошибка в номере задания")
     except Exception as e:
-        logger.error(f"Critical error: {e}")
-        await callback.answer("⛔ Произошла системная ошибка")
+        logger.error(f"Ошибка показа задания: {str(e)}")
+        await callback.answer("❌ Ошибка загрузки задания")
+
     
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
