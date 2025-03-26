@@ -166,8 +166,8 @@ class AdminForm(StatesGroup):
     add_task_media = State()
     delete_course = State()
 
-def main_menu() -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+def main_menu() -> types.ReplyKeyboardBuilder:
+    builder = ReplyKeyboardBuilder()
     builder.button(text="📚 Выбрать курс", callback_data="select_course")
     builder.button(text="🆘 Поддержка", callback_data="support")
     builder.adjust(2)
@@ -830,8 +830,8 @@ async def handle_submission_review(callback: types.CallbackQuery):
 
 ### BLOCK 4: ADMIN PANEL HANDLERS ###
 
-def main_menu() -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+def main_menu() -> types.ReplyKeyboardBuilder:
+    builder = ReplyKeyboardBuilder()
     builder.button(text="📚 Выбрать курс", callback_data="select_course")
     builder.button(text="🆘 Поддержка", callback_data="support")
     builder.adjust(2)
@@ -839,7 +839,7 @@ def main_menu() -> types.InlineKeyboardMarkup:
 
 def admin_menu():
     # Создаем клавиатуру для админ-меню
-    builder = InlineKeyboardBuilder()
+    builder = ReplyKeyboardBuilder()
     
     # Список кнопок администратора
     admin_buttons = [
