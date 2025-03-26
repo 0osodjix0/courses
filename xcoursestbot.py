@@ -202,7 +202,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if user:
         await message.answer(f"Добро пожаловать, {user[1]}!", reply_markup=main_menu())
     else:
-        await message.answer("📝 Введите ваше полное ФИО:", reply_markup=ReplyKeyboardRemove())
+        await message.answer("📝 Давай познакомимся! Для начала регистрации введи свое ФИО. Это нужно, чтобы твой наставник мог оценивать задания и давать обратную связь. Напиши своё полное имя, фамилию и отчество:", reply_markup=ReplyKeyboardRemove())
         await state.set_state(Form.full_name)
 
 @dp.message(Form.full_name)
@@ -261,7 +261,7 @@ async def show_courses(message: types.Message):
         )
         current_course = cursor.fetchone()
     
-    text = "📚 Доступные курсы:\n\n"
+    text = "В этом разделе ты можешь выбрать курс, в котором будут модули с заданиями. Выполняй их и отправляй на проверку! 🚀 \n\n"
     if current_course and current_course[0]:
         text += f"🎯 Текущий курс: {current_course[0]}\n\n"
     text += "👇 Выберите курс:"
@@ -329,6 +329,80 @@ def modules_kb(course_id: int):
     except Exception as e:
         logger.error(f"Ошибка клавиатуры модулей: {e}")
         return InlineKeyboardBuilder().as_markup()
+
+@dp.callback_query(F.data.startswith("task_"))
+async def task_selected(callback: CallbackQuery):
+    try:
+        task_id = int(callback.data.split("_")[1])
+        user_id = callback.from_user.id
+        
+        with db.cursor() as cursor:
+            # Выполняем обновленный SQL-запрос
+            cursor.execute('''
+                SELECT 
+                    t.title, 
+                    t.content, 
+                    t.file_id,
+                    t.file_type,
+                    s.status,
+                    s.score
+                FROM tasks t
+                LEFT JOIN submissions s 
+                    ON s.task_id = t.task_id 
+                    AND s.user_id = %s
+                WHERE t.task_id = %s
+                ORDER BY s.submitted_at DESC
+                LIMIT 1
+            ''', (user_id, task_id))
+            task_data = cursor.fetchone()
+
+        if not task_data:
+            await callback.answer("❌ Задание не найдено")
+            return
+
+        # Распаковываем данные
+        title, content, file_id, file_type, status, score = task_data
+        
+        # Формируем текст сообщения
+        text = f"📝 <b>{title}</b>\n\n{content}"
+        
+        # Добавляем статус если есть
+        if status:
+            text += f"\n\nСтатус: {status}"
+            if score is not None:
+                text += f"\nОценка: {score}/100"
+
+        # Отправляем медиафайл если есть
+        if file_id and file_type:
+            try:
+                if file_type == 'photo':
+                    await callback.message.answer_photo(
+                        file_id, 
+                        caption=text,
+                        parse_mode=types.ParseMode.HTML
+                    )
+                else:
+                    await callback.message.answer_document(
+                        file_id,
+                        caption=text,
+                        parse_mode=types.ParseMode.HTML
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка отправки медиа: {e}")
+                await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
+        else:
+            await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
+
+        # Обновляем клавиатуру
+        await callback.message.edit_reply_markup(
+            reply_markup=task_keyboard(task_id, user_id)
+        )
+
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка показа задания: {str(e)}")
+        await callback.answer("❌ Ошибка загрузки задания")
 
 @dp.callback_query(F.data.startswith("module_"))
 async def module_selected(callback: types.CallbackQuery):
@@ -409,17 +483,129 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
             )
             submission = cursor.fetchone()
 
-        if submission:
-            status_text = f"\n\nСтатус: {submission[0]}\nОценка: {submission[1] or 'нет'}"
-            await callback.message.answer(status_text)
-        else:
-            await callback.message.answer("Отправьте ваше решение:", reply_markup=cancel_button())
-            await state.set_state(TaskStates.waiting_for_solution)
-            await state.update_data(task_id=task_id)
+        # В запросе получения статуса задания:
+                cursor.execute(
+                       """SELECT status, score 
+                       FROM submissions 
+                       WHERE user_id = %s AND task_id = %s 
+                       ORDER BY submitted_at DESC 
+                       LIMIT 1""",
+                       (user_id, task_id)
+                      )
+
+def task_keyboard(task_id: int, user_id: int):
+    builder = InlineKeyboardBuilder()
+    
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT status 
+            FROM submissions 
+            WHERE user_id = %s AND task_id = %s
+            ORDER BY submitted_at DESC 
+            LIMIT 1
+        ''', (user_id, task_id))
+        submission = cursor.fetchone()
+    
+    if submission and submission[0] == 'rejected':
+        builder.button(text="🔄 Отправить заново", callback_data=f"retry_{task_id}")
+    else:
+        builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
+    
+    builder.button(text="🔙 Назад", callback_data=f"back_to_module_{task_id}")
+    builder.adjust(1)
+    
+    return builder.as_markup()
 
     except Exception as e:
         logger.error(f"Ошибка выбора задания: {e}")
         await callback.answer("❌ Ошибка загрузки задания")
+### 2. Добавляем новый обработчик ###
+@dp.callback_query(F.data.startswith("retry_"))
+async def retry_submission(callback: CallbackQuery, state: FSMContext):
+    try:
+        task_id = int(callback.data.split("_")[1])
+        user_id = callback.from_user.id
+        
+        # Проверяем существующее решение
+        with db.cursor() as cursor:
+            cursor.execute('''
+                UPDATE submissions 
+                SET 
+                    status = 'pending',
+                    score = NULL,
+                    content = NULL,
+                    file_id = NULL,
+                    submitted_at = NOW()
+                WHERE 
+                    user_id = %s AND 
+                    task_id = %s AND 
+                    status = 'rejected'
+                RETURNING submission_id
+            ''', (user_id, task_id))
+            
+            if cursor.rowcount == 0:
+                await callback.answer("❌ Нет решения для повторной отправки")
+                return
+
+        await callback.message.answer("🔄 Отправьте исправленное решение:")
+        await state.set_state(TaskStates.waiting_for_solution)
+        await state.update_data(task_id=task_id)
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Retry submission error: {str(e)}")
+        await callback.answer("❌ Ошибка повторной отправки")
+
+### 3. Обновляем обработчик отправки решений ###
+@dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
+async def process_solution(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data['task_id']
+    user_id = message.from_user.id
+    
+    try:
+        file_ids = []
+        content = None
+        
+        # Обработка медиа
+        if message.content_type == 'text':
+            content = message.text
+        elif message.document:
+            file_ids.append(f"doc:{message.document.file_id}")
+        elif message.photo:
+            file_ids.append(f"photo:{message.photo[-1].file_id}")
+
+        # Обновляем существующую запись
+        with db.cursor() as cursor:
+            cursor.execute('''
+                UPDATE submissions 
+                SET 
+                    content = %s,
+                    file_id = %s,
+                    submitted_at = NOW(),
+                    status = 'pending'
+                WHERE 
+                    user_id = %s AND 
+                    task_id = %s
+                RETURNING submission_id
+            ''', (content, ",".join(file_ids), user_id, task_id))
+
+            if cursor.rowcount == 0:
+                # Создаем новую запись если не нашли для обновления
+                cursor.execute('''
+                    INSERT INTO submissions 
+                    (user_id, task_id, content, file_id)
+                    VALUES (%s, %s, %s, %s)
+                ''', (user_id, task_id, content, ",".join(file_ids)))
+
+        await message.answer("✅ Решение обновлено! Ожидайте проверки.")
+        await notify_admin(task_id, user_id)
+
+    except Exception as e:
+        logger.error(f"Solution processing error: {str(e)}")
+        await message.answer("❌ Ошибка сохранения решения")
+    finally:
+        await state.clear()
 
 @dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
 async def process_solution(message: Message, state: FSMContext):
