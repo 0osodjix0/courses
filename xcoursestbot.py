@@ -498,40 +498,69 @@ async def task_selected(callback: types.CallbackQuery):
     try:
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
-def task_keyboard(task_id: int, user_id: int):
-    builder = InlineKeyboardBuilder()
-    
-    with db.cursor() as cursor:
-        cursor.execute('''
-            SELECT status 
-            FROM submissions 
-            WHERE user_id = %s AND task_id = %s
-            ORDER BY submitted_at DESC 
-            LIMIT 1
-        ''', (user_id, task_id))
-        submission = cursor.fetchone()
-    
-    if submission and submission[0] == 'rejected':
-        builder.button(text="🔄 Отправить заново", callback_data=f"retry_{task_id}")
-    else:
-        builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
-    
-    builder.button(text="🔙 Назад", callback_data=f"back_to_module_{task_id}")
-    builder.adjust(1)
-    
-    return builder.as_markup()
+        
+        with db.cursor() as cursor:
+            cursor.execute(
+                """SELECT 
+                    t.title, 
+                    t.content, 
+                    t.file_id,
+                    t.file_type,
+                    s.status,
+                    s.score
+                FROM tasks t
+                LEFT JOIN submissions s 
+                    ON s.task_id = t.task_id 
+                    AND s.user_id = %s
+                WHERE t.task_id = %s
+                ORDER BY s.submitted_at DESC
+                LIMIT 1""",
+                (user_id, task_id)
+            )
+            task_data = cursor.fetchone()
 
-    except Exception as e:
-        logger.error(f"Ошибка выбора задания: {e}")
-        await callback.answer("❌ Ошибка загрузки задания")
+        if not task_data:
+            await callback.answer("❌ Задание не найдено")
+            return
+
+        title, content, file_id, file_type, status, score = task_data
+        text = f"📝 <b>{title}</b>\n\n{content}"
+        
+        if status:
+            text += f"\n\nСтатус: {status}"
+            if score is not None:
+                text += f"\nОценка: {score}/100"
+
+        if file_id and file_type:
+            try:
+                if file_type == 'photo':
+                    await callback.message.answer_photo(
+                        file_id, 
+                        caption=text,
+                        parse_mode=types.ParseMode.HTML
+                    )
+                else:
+                    await callback.message.answer_document(
+                        file_id,
+                        caption=text,
+                        parse_mode=types.ParseMode.HTML
+                    )
+            except Exception as media_error:
+                logger.error(f"Media error: {media_error}")
+                await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
+        else:
+            await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
 
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
         )
 
+        await callback.answer()
+
     except Exception as e:
-        logger.error(f"Ошибка в обработчике задания: {e}")
-        await callback.answer("❌ Произошла ошибка")
+        logger.error(f"Task handler error: {e}")
+        await callback.answer("❌ Ошибка загрузки задания")
+        
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
 async def retry_submission(callback: CallbackQuery, state: FSMContext):
