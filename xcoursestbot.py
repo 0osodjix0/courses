@@ -533,7 +533,7 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
                 text += f"\nОценка: {score}/100"
 
         if file_id and file_type:
-            try:
+    try:
                 if file_type == 'photo':
                     await callback.message.answer_photo(
                         file_id, 
@@ -546,7 +546,7 @@ async def task_selected(callback: types.CallbackQuery, state: FSMContext):
                         caption=text,
                         parse_mode=types.ParseMode.HTML
                     )
-            except Exception as e:
+    except Exception as e:
                 logger.error(f"Ошибка отправки медиа: {e}")
                 await callback.message.answer(text, parse_mode=types.ParseMode.HTML)
         else:
