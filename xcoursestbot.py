@@ -499,12 +499,13 @@ async def task_selected_handler(callback: types.CallbackQuery):
         task_id = int(callback.data.split("_")[1])
         user_id = callback.from_user.id
 
+        # Получение данных задания
         with db.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT 
-                    t.title, 
-                    t.content, 
+                    t.title,
+                    t.content,
                     t.file_id,
                     t.file_type,
                     s.status,
@@ -517,86 +518,56 @@ async def task_selected_handler(callback: types.CallbackQuery):
                 ORDER BY s.submitted_at DESC
                 LIMIT 1
                 """,
-                (user_id, task_id)  # Исправлено: добавлена закрывающая скобка
-            )
+                (user_id, task_id)
             task_data = cursor.fetchone()
 
         if not task_data:
             await callback.answer("🚫 Задание не найдено")
             return
 
+        # Формирование ответа
         title, content, file_id, file_type, status, score = task_data
         response_text = f"📌 <b>{title}</b>\n\n{content}"
-
+        
         if status:
-            response_text += f"\n\nСтатус: {status}"
+            response_text += f"\n\nСтатус: {status.capitalize()}"
             if score is not None:
                 response_text += f"\nОценка: {score}/100"
 
+        # Отправка медиа
         try:
             if file_id and file_type:
-                if file_type == 'photo':
-                    await callback.message.answer_photo(
-                        file_id, 
-                        caption=response_text,
-                        parse_mode=types.ParseMode.HTML
-                    )
-                else:
-                    await callback.message.answer_document(
-                        file_id,
-                        caption=response_text,
-                        parse_mode=types.ParseMode.HTML
-                    )
+                method = (
+                    callback.message.answer_photo 
+                    if file_type == 'photo' 
+                    else callback.message.answer_document
+                )
+                await method(
+                    file_id,
+                    caption=response_text,
+                    parse_mode=types.ParseMode.HTML
+                )
             else:
-                await callback.message.answer(response_text, parse_mode=types.ParseMode.HTML)
+                await callback.message.answer(
+                    response_text, 
+                    parse_mode=types.ParseMode.HTML
+                )
         except Exception as media_error:
-            logger.error(f"Ошибка отправки медиа: {media_error}")
-            await callback.message.answer(response_text, parse_mode=types.ParseMode.HTML)
+            logger.error(f"Media error: {media_error}")
+            await callback.message.answer(response_text)
 
+        # Обновление интерфейса
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
-        )  # Исправлено: добавлена закрывающая скобка
-
+        )
         await callback.answer()
 
     except ValueError as ve:
-        logger.error(f"Неверный формат ID задания: {ve}")
+        logger.error(f"Invalid task ID: {ve}")
         await callback.answer("❌ Ошибка в номере задания")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {str(e)}")
+        logger.error(f"Critical error: {e}")
         await callback.answer("⛔ Произошла системная ошибка")
-
-def task_keyboard(task_id: int, user_id: int) -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    try:
-        with db.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT status 
-                FROM submissions 
-                WHERE user_id = %s AND task_id = %s
-                ORDER BY submitted_at DESC 
-                LIMIT 1
-                """,
-                (user_id, task_id)
-            )
-            submission = cursor.fetchone()
-
-        if submission and submission[0] == 'rejected':
-            builder.button(text="🔄 Повторить", callback_data=f"retry_{task_id}")
-        else:
-            builder.button(text="✏️ Ответить", callback_data=f"submit_{task_id}")
-
-        builder.button(text="🔙 Назад", callback_data="back_to_module")
-        builder.adjust(1)
-
-    except Exception as e:
-        logger.error(f"Ошибка клавиатуры: {e}")
-        builder.button(text="✏️ Ответить", callback_data=f"submit_{task_id}")
-        builder.button(text="🔙 Назад", callback_data="back_to_module")
-        builder.adjust(1)
-
-    return builder.as_markup()
     
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
