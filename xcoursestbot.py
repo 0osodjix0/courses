@@ -518,7 +518,8 @@ async def task_selected_handler(callback: types.CallbackQuery):
                 ORDER BY s.submitted_at DESC
                 LIMIT 1
                 """,
-                (user_id, task_id)
+                (user_id, task_id)  # ✅ Исправлено: закрывающая скобка
+            )  # ✅ Исправлено: закрывающая скобка для execute()
             task_data = cursor.fetchone()
 
         if not task_data:
@@ -559,7 +560,7 @@ async def task_selected_handler(callback: types.CallbackQuery):
         # Обновление интерфейса
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id, user_id)
-        )
+        )  # ✅ Исправлено: закрывающая скобка
         await callback.answer()
 
     except ValueError as ve:
