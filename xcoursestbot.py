@@ -204,8 +204,9 @@ async def back_to_main_menu(callback: CallbackQuery):
     await callback.message.edit_text(
         "Главное меню:",
         reply_markup=main_menu(),
-        parse_mode=ParseMode.HTML  
-    )  
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
     
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -214,9 +215,23 @@ async def cmd_start(message: types.Message, state: FSMContext):
         user = cursor.fetchone()
     
     if user:
-        await message.answer(f"Добро пожаловать, {user[1]}!", reply_markup=main_menu())
+        # Пользователь уже зарегистрирован
+        await message.answer(
+            f"Добро пожаловать, {user[1]}!", 
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer(
+            "Выберите действие:", 
+            reply_markup=main_menu()
+        )
     else:
-        await message.answer("📝 Давай познакомимся! Для начала регистрации введи свое ФИО. Это нужно, чтобы твой наставник мог оценивать задания и давать обратную связь. Напиши своё полное имя, фамилию и отчество:", reply_markup=ReplyKeyboardRemove())
+        # Новый пользователь, начинаем регистрацию
+        await message.answer(
+            "📝 Давай познакомимся! Для начала регистрации введи свое ФИО. "
+            "Это нужно, чтобы твой наставник мог оценивать задания и давать обратную связь.\n"
+            "Напиши своё полное имя, фамилию и отчество:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         await state.set_state(Form.full_name)
 
 @dp.message(Form.full_name)
@@ -243,10 +258,6 @@ async def handle_media(message: Message):
     elif message.document:
         return {'type': 'document', 'file_id': message.document.file_id}
     return None
-    
-    if media_id:
-        await state.update_data(media_id=media_id)
-    return media_id
 
 def courses_kb():
     with db.cursor() as cursor:
@@ -491,10 +502,14 @@ async def back_to_module(callback: CallbackQuery):
             JOIN modules m ON t.module_id = m.module_id
             WHERE t.task_id = %s
         ''', (task_id,))
-        module_id = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        if not result:
+            await callback.answer("❌ Модуль не найден")
+            return
+        module_id = result[0]
     
     await module_selected(callback, module_id)
-
+    
 async def module_selected(callback: CallbackQuery, module_id: int):
     try:
         with db.cursor() as cursor:
@@ -641,88 +656,148 @@ async def process_solution(message: Message, state: FSMContext):
         file_ids = []
         content = None
         
+        # Обработка различных типов контента
         if message.content_type == 'text':
             content = message.text
-        elif message.document:
-            file_ids.append(f"doc:{message.document.file_id}")
         elif message.photo:
-            file_ids.append(f"photo:{message.photo[-1].file_id}")
+            file_ids = [f"photo:{photo.file_id}" for photo in message.photo]
+        elif message.document:
+            file_ids = [f"doc:{message.document.file_id}"]
 
+        # Валидация входящих данных
+        if not content and not file_ids:
+            await message.answer("❌ Пожалуйста, прикрепите файл или напишите текст решения")
+            return
+
+        # Сохранение в базу данных
         with db.cursor() as cursor:
             cursor.execute(
                 """INSERT INTO submissions 
                 (user_id, task_id, submitted_at, file_id, content)
-                VALUES (%s, %s, %s, %s, %s)""",
-                (user_id, task_id, datetime.now(), ",".join(file_ids), content)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING submission_id""",
+                (
+                    user_id,
+                    task_id,
+                    datetime.now(),
+                    ",".join(file_ids) if file_ids else None,
+                    content
+                )
             )
-        
-        await message.answer("✅ Решение отправлено на проверку!")
-        await notify_admin(task_id, user_id)
+            submission_id = cursor.fetchone()[0]
+
+        await message.answer("✅ Решение успешно отправлено на проверку!")
+        await notify_admin(submission_id, task_id, user_id)
 
     except IntegrityError as e:
-        logger.error(f"Ошибка данных: {e}")
-        await message.answer("❌ Ошибка: Недействительные данные")
+        logger.error(f"Integrity error: {e}")
+        await message.answer("❌ Ошибка: Некорректные данные решения")
+    except OperationalError as e:
+        logger.error(f"Database connection error: {e}")
+        await message.answer("❌ Ошибка подключения к базе данных")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        await message.answer("⚠️ Произошла системная ошибка")
+        logger.error(f"Unexpected error: {e}")
+        await message.answer("⚠️ Произошла непредвиденная ошибка")
     finally:
         await state.clear()
 
-async def notify_admin(task_id: int, user_id: int):
+async def send_media_with_caption(file_type: str, file_id: str, caption: str, keyboard: InlineKeyboardMarkup):
+    try:
+        if file_type == "doc":
+            await bot.send_document(
+                ADMIN_ID,
+                document=file_id,
+                caption=caption,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await bot.send_photo(
+                ADMIN_ID,
+                photo=file_id,
+                caption=caption,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error(f"Error sending media: {e}")
+
+async def notify_admin(submission_id: int, task_id: int, user_id: int):
     try:
         with db.cursor() as cursor:
-            cursor.execute(
-                """SELECT s.content, s.file_id, u.full_name, t.title 
+            # Получаем полную информацию о решении
+            cursor.execute("""
+                SELECT s.content, s.file_id, u.full_name, t.title, s.submitted_at 
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
-                WHERE s.task_id = %s AND s.user_id = %s""",
-                (task_id, user_id)
-            )
+                WHERE s.submission_id = %s
+            """, (submission_id,))
+            
             submission = cursor.fetchone()
+            if not submission:
+                logger.error(f"Submission {submission_id} not found")
+                return
 
-            text = (f"📬 Новое решение!\n\n"
-                    f"Студент: {submission[2]}\n"
-                    f"Задание: {submission[3]}\n\n"
-                    f"Текст: {submission[0] or 'Отсутствует'}")
+            content, file_ids, user_name, task_title, submitted_at = submission
 
+            # Формируем информативное сообщение
+            text = (
+                f"📬 Новое решение (#{submission_id})\n"
+                f"⏰ {submitted_at.strftime('%d.%m.%Y %H:%M')}\n"
+                f"👤 Студент: [{user_name}](tg://user?id={user_id})\n"
+                f"📝 Задание: {task_title}\n"
+                f"📄 Текст решения: {content or 'отсутствует'}"
+            )
+
+            # Создаем клавиатуру для админа
             admin_kb = InlineKeyboardBuilder()
             admin_kb.button(text="✅ Принять", callback_data=f"accept_{task_id}_{user_id}")
-            admin_kb.button(text="❌ Вернуть", callback_data=f"reject_{task_id}_{user_id}")
+            admin_kb.button(text="❌ Требует правок", callback_data=f"reject_{task_id}_{user_id}")
+            admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={user_id}")
 
-            if submission[1]:
-                files = submission[1].split(',')
-                media = MediaGroupBuilder()
-                for idx, file in enumerate(files):
+            # Отправка медиафайлов
+            if file_ids:
+                files = file_ids.split(',')
+                media_group = MediaGroupBuilder()
+                first_media_sent = False
+
+                for file in files:
                     file_type, file_id = file.split(":", 1)
-                    if idx == 0:
-                        if file_type == "doc":
-                            await bot.send_document(
-                                ADMIN_ID, 
-                                document=file_id, 
-                                caption=text,
-                                reply_markup=admin_kb.as_markup()
-                            )
-                        else:
-                            await bot.send_photo(
-                                ADMIN_ID,
-                                photo=file_id,
-                                caption=text,
-                                reply_markup=admin_kb.as_markup()
-                            )
+                    
+                    if not first_media_sent:
+                        await send_media_with_caption(
+                            file_type, 
+                            file_id, 
+                            text, 
+                            admin_kb.as_markup()
+                        )
+                        first_media_sent = True
                     else:
                         if file_type == "doc":
-                            media.add_document(document=file_id)
+                            media_group.add_document(file_id)
                         else:
-                            media.add_photo(photo=file_id)
+                            media_group.add_photo(file_id)
+
                 if len(files) > 1:
-                    await bot.send_media_group(ADMIN_ID, media=media.build())
+                    await bot.send_media_group(ADMIN_ID, media=media_group.build())
             else:
-                await bot.send_message(ADMIN_ID, text, reply_markup=admin_kb.as_markup())
+                await bot.send_message(
+                    ADMIN_ID,
+                    text,
+                    reply_markup=admin_kb.as_markup(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
 
     except Exception as e:
-        logger.error(f"Ошибка уведомления: {e}")
-        await bot.send_message(ADMIN_ID, f"⚠️ Ошибка обработки решения\nTask: {task_id}\nUser: {user_id}")
+        logger.error(f"Notification error: {e}")
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ Ошибка уведомления\n"
+            f"Задание: {task_id}\n"
+            f"Студент: {user_id}\n"
+            f"Ошибка: {str(e)[:200]}"
+        )
 
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
@@ -759,22 +834,37 @@ async def handle_submission_review(callback: types.CallbackQuery):
 
 ### BLOCK 4: ADMIN PANEL HANDLERS ###
 
+def main_menu() -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📚 Выбрать курс", callback_data="select_course")
+    builder.button(text="🆘 Поддержка", callback_data="support")
+    builder.adjust(2)
+    return builder.as_markup()
+
 def admin_menu():
-    commands = [
-        ("📊 Статистика", "stats"),
-        ("📝 Добавить курс", "add_course"),
-        ("🗑 Удалить курс", "delete_course"),
-        ("➕ Добавить модуль", "add_module"),
-        ("📌 Добавить задание", "add_task"),
-        ("👥 Пользователи", "list_users"),
-        ("🔙 Назад", "admin_back")
+    # Создаем клавиатуру для админ-меню
+    builder = ReplyKeyboardBuilder()
+    
+    # Список кнопок администратора
+    admin_buttons = [
+        "📊 Статистика",
+        "📝 Добавить курс",
+        "🗑 Удалить курс",
+        "➕ Добавить модуль", 
+        "📌 Добавить задание",
+        "👥 Пользователи",
+        "🔙 Назад"
     ]
     
-    builder = ReplyKeyboardBuilder()
-    for text, _ in commands:
-        builder.button(text=text)
+    # Добавляем кнопки в клавиатуру
+    for button_text in admin_buttons:
+        builder.button(text=button_text)
     builder.adjust(2, 2, 2, 1)
-    return builder.as_markup(resize_keyboard=True)
+    
+    return builder.as_markup(
+        resize_keyboard=True,  # Автоматический размер кнопок
+        one_time_keyboard=False  # Клавиатура остается открытой
+    )
 
 # 3. Обработчик кнопки "Назад" в админ-меню
 @dp.message(F.text == "🔙 Назад")
@@ -959,6 +1049,10 @@ async def process_course_desc(message: Message, state: FSMContext):
 
 @dp.message(AdminForm.add_course_media, F.content_type.in_({'photo', 'document'}))
 async def process_course_media(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        await message.answer("Действие отменено", reply_markup=admin_menu())
+        return
     media_id = await handle_media(message, state)
     data = await state.get_data()
     
@@ -1241,6 +1335,7 @@ async def cancel_handler(callback: CallbackQuery, state: FSMContext):
 @dp.message(F.text == "🔙 В главное меню")
 async def back_to_main(message: Message):
     await message.answer("Главное меню:", reply_markup=main_menu())
+    await message.delete()
 
 async def on_startup():
     logger.info("✅ Бот запущен")
