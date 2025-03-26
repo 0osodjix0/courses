@@ -57,6 +57,7 @@ class Database:
         """Инициализация таблиц в PostgreSQL"""
         with self.conn.cursor() as cursor:
             try:
+                # Создание основных таблиц
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -80,11 +81,6 @@ class Database:
                         title TEXT NOT NULL,
                         media_id TEXT
                     )''')
-                cursor.execute('''
-                ALTER TABLE tasks 
-                ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
-                     ''')
-                self.conn.commit()
 
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS tasks (
@@ -92,9 +88,11 @@ class Database:
                         module_id INTEGER NOT NULL REFERENCES modules(module_id) ON DELETE CASCADE,
                         title TEXT NOT NULL,
                         content TEXT NOT NULL,
-                        file_id TEXT
+                        file_id TEXT,
+                        file_type VARCHAR(10)
                     )''')
 
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS submissions (
                         submission_id SERIAL PRIMARY KEY,
                         user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -105,7 +103,15 @@ class Database:
                         file_id TEXT,
                         content TEXT
                     )''')
+
+                # Добавляем новые колонки при необходимости
+                cursor.execute('''
+                    ALTER TABLE tasks 
+                    ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
+                ''')
+
                 self.conn.commit()
+                
             except Exception as e:
                 self.conn.rollback()
                 logger.error(f"Ошибка инициализации таблиц: {e}")
