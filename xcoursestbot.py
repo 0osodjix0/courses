@@ -204,8 +204,8 @@ async def back_to_main_menu(callback: CallbackQuery):
     await callback.message.edit_text(
         "Главное меню:",
         reply_markup=main_menu(),
-        parse_mode=ParseMode.HTML
-
+        parse_mode=ParseMode.HTML  
+    )  
     
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
