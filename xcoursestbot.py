@@ -166,12 +166,18 @@ class AdminForm(StatesGroup):
     add_task_media = State()
     delete_course = State()
 
-def main_menu() -> types.ReplyKeyboardBuilder:
+def main_menu() -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="📚 Выбрать курс", callback_data="select_course")
-    builder.button(text="🆘 Поддержка", callback_data="support")
+    # Для Reply-кнопок указываем только текст
+    builder.button(text="📚 Выбрать курс")
+    builder.button(text="🆘 Поддержка")
+    # Настройка расположения кнопок (2 кнопки в ряд)
     builder.adjust(2)
-    return builder.as_markup()
+    # Возвращаем клавиатуру с настройками
+    return builder.as_markup(
+        resize_keyboard=True,    # Автоматический размер кнопок
+        one_time_keyboard=False  # Клавиатура остается открытой
+    )
     
 def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -830,36 +836,45 @@ async def handle_submission_review(callback: types.CallbackQuery):
 
 ### BLOCK 4: ADMIN PANEL HANDLERS ###
 
-def main_menu() -> types.ReplyKeyboardBuilder:
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="📚 Выбрать курс", callback_data="select_course")
-    builder.button(text="🆘 Поддержка", callback_data="support")
-    builder.adjust(2)
-    return builder.as_markup()
-
-def admin_menu():
-    # Создаем клавиатуру для админ-меню
+def main_menu() -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     
-    # Список кнопок администратора
+    # Добавляем кнопки без callback_data
+    builder.button(text="📚 Выбрать курс")
+    builder.button(text="🆘 Поддержка")
+    
+    # Настройка расположения (2 кнопки в ряд)
+    builder.adjust(2)
+    
+    return builder.as_markup(
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
+
+def admin_menu() -> types.ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    
     admin_buttons = [
         "📊 Статистика",
         "📝 Добавить курс",
         "🗑 Удалить курс",
-        "➕ Добавить модуль", 
+        "➕ Добавить модуль",
         "📌 Добавить задание",
         "👥 Пользователи",
         "🔙 Назад"
     ]
     
-    # Добавляем кнопки в клавиатуру
+    # Добавляем все кнопки
     for button_text in admin_buttons:
         builder.button(text=button_text)
+    
+    # Настройка расположения:
+    # Первые 2 ряда по 2 кнопки, затем 2 кнопки, затем 1
     builder.adjust(2, 2, 2, 1)
     
     return builder.as_markup(
-        resize_keyboard=True,  # Автоматический размер кнопок
-        one_time_keyboard=False  # Клавиатура остается открытой
+        resize_keyboard=True,
+        one_time_keyboard=False
     )
 
 # 3. Обработчик кнопки "Назад" в админ-меню
