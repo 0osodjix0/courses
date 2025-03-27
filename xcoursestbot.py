@@ -829,34 +829,64 @@ async def notify_admin(submission_id: int, user_id: int):
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
     try:
-        action, task_id, user_id = callback.data.split('_')
-        task_id = int(task_id)
-        user_id = int(user_id)
-
+        # Разбираем callback_data с проверкой формата
+        data_parts = callback.data.split('_')
+        if len(data_parts) != 3:
+            raise ValueError("Invalid callback data format")
+        
+        action, task_id_str, user_id_str = data_parts
+        task_id = int(task_id_str)
+        user_id = int(user_id_str)
         new_status = "accepted" if action == "accept" else "rejected"
 
         with db.cursor() as cursor:
-            cursor.execute(
-                "UPDATE submissions SET status = %s WHERE task_id = %s AND user_id = %s",
-                (new_status, task_id, user_id)
-            )
+            # Обновляем статус с явным коммитом
+            cursor.execute('''
+                UPDATE submissions 
+                SET status = %s 
+                WHERE 
+                    task_id = %s AND 
+                    user_id = %s AND 
+                    submission_id = (
+                        SELECT submission_id 
+                        FROM submissions 
+                        WHERE task_id = %s AND user_id = %s 
+                        ORDER BY submitted_at DESC 
+                        LIMIT 1
+                    )
+            ''', (new_status, task_id, user_id, task_id, user_id))
             
-            cursor.execute(
-                "SELECT title FROM tasks WHERE task_id = %s",
-                (task_id,)
-            )
-            task_title = cursor.fetchone()[0]
+            # Получаем название задания с проверкой существования
+            cursor.execute('''
+                SELECT title FROM tasks WHERE task_id = %s
+            ''', (task_id,))
+            task_result = cursor.fetchone()
+            if not task_result:
+                await callback.answer("❌ Задание не найдено")
+                return
+            task_title = task_result[0]
 
+            db.conn.commit()  # Явный коммит изменений
+
+        # Отправляем уведомление пользователю
         user_message = (
             f"📢 Ваше решение по заданию \"{task_title}\" "
             f"{'принято ✅' if action == 'accept' else 'отклонено ❌'}."
         )
         await bot.send_message(user_id, user_message)
+        
+        # Обновляем интерфейс
         await callback.answer("✅ Статус обновлен!")
         await callback.message.edit_reply_markup(reply_markup=None)
 
+    except ValueError as e:
+        logger.error(f"Invalid callback data: {callback.data} - {str(e)}")
+        await callback.answer("❌ Ошибка формата данных")
+    except psycopg2.Error as e:
+        logger.error(f"Database error: {str(e)}")
+        await callback.answer("❌ Ошибка базы данных")
     except Exception as e:
-        logger.error(f"Ошибка обработки решения: {e}")
+        logger.error(f"Review error: {str(e)}", exc_info=True)
         await callback.answer("❌ Ошибка обновления статуса")
 
 ### BLOCK 4: ADMIN PANEL HANDLERS ###
