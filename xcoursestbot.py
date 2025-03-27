@@ -796,10 +796,10 @@ async def notify_admin(submission_id: int, user_id: int):
         logger.error(f"Notification error: {str(e)}", exc_info=True)
 
             # Создаем клавиатуру для админа
-            admin_kb = InlineKeyboardBuilder()
-            admin_kb.button(text="✅ Принять", callback_data=f"accept_{task_id}_{user_id}")
-            admin_kb.button(text="❌ Требует правок", callback_data=f"reject_{task_id}_{user_id}")
-            admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={user_id}")
+        admin_kb = InlineKeyboardBuilder()
+        admin_kb.button(text="✅ Принять", callback_data=f"accept_{task_id}_{user_id}")
+        admin_kb.button(text="❌ Требует правок", callback_data=f"reject_{task_id}_{user_id}")
+        admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={user_id}")
 
             # Отправка медиафайлов
             if file_ids:
