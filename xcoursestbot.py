@@ -207,9 +207,18 @@ def cancel_button():
 def support_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="📨 Написать в поддержку", url=f"tg://user?id={ADMIN_ID}")
-    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.button(text="🔙 Назад", callback_data="main_menu")  # Правильный callback_data
     builder.adjust(1)
     return builder.as_markup()
+
+@dp.callback_query(F.data == "main_menu")
+async def back_to_main_menu(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Главное меню:",
+        reply_markup=main_menu(),
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("submit_"))
 async def handle_submit_solution(callback: CallbackQuery, state: FSMContext):
@@ -634,51 +643,41 @@ async def process_solution(message: Message, state: FSMContext):
         return
 
     try:
-        # Обработка контента
         file_ids = []
         content = None
         
         if message.content_type == 'text':
-            content = message.html_text  # Сохраняем форматирование
+            content = message.html_text
         elif message.photo:
             file_ids = [f"photo:{message.photo[-1].file_id}"]
         elif message.document:
             file_ids = [f"doc:{message.document.file_id}"]
-        
-        # Валидация данных
+
         if not content and not file_ids:
             await message.answer("❌ Решение должно содержать текст или файл")
             return
 
-        # Сохранение в БД
         with db.cursor() as cursor:
             cursor.execute('''
                 INSERT INTO submissions 
                 (user_id, task_id, content, file_id, status, submitted_at) 
                 VALUES (%s, %s, %s, %s, 'pending', NOW())
                 RETURNING submission_id
-            ''', (
-                user_id,
-                task_id,
-                content,
-                ",".join(file_ids) if file_ids else None
-            ))
+            ''', (user_id, task_id, content, ",".join(file_ids) if file_ids else None))
             
             submission_id = cursor.fetchone()[0]
-            db.conn.commit()
 
-        await message.answer("✅ Решение отправлено на проверку!\nОжидайте обратной связи.")
-        await notify_admin(submission_id, user_id)
+        await message.answer("✅ Решение отправлено на проверку!")
+        await notify_admin(submission_id, user_id)  # Передаем оба аргумента
 
     except psycopg2.Error as e:
         logger.error(f"Database error: {str(e)}")
-        await message.answer("❌ Ошибка базы данных. Попробуйте позже.")
+        await message.answer("❌ Ошибка базы данных")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        await message.answer("⚠️ Произошла непредвиденная ошибка")
+        await message.answer("⚠️ Произошла ошибка")
     finally:
         await state.clear()
-
 @dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
 async def process_solution(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -755,33 +754,46 @@ async def send_media_with_caption(file_type: str, file_id: str, caption: str, ke
     except Exception as e:
         logger.error(f"Error sending media: {e}")
 
-async def notify_admin(submission_id: int, task_id: int, user_id: int):
+async def notify_admin(submission_id: int, user_id: int):
+    """Уведомление администратора о новом решении"""
     try:
         with db.cursor() as cursor:
-            # Получаем полную информацию о решении
-            cursor.execute("""
-                SELECT s.content, s.file_id, u.full_name, t.title, s.submitted_at 
+            cursor.execute('''
+                SELECT s.content, s.file_id, u.full_name, t.title 
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
                 WHERE s.submission_id = %s
-            """, (submission_id,))
+            ''', (submission_id,))
             
-            submission = cursor.fetchone()
-            if not submission:
-                logger.error(f"Submission {submission_id} not found")
+            submission_data = cursor.fetchone()
+            if not submission_data:
                 return
 
-            content, file_ids, user_name, task_title, submitted_at = submission
-
-            # Формируем информативное сообщение
             text = (
                 f"📬 Новое решение (#{submission_id})\n"
-                f"⏰ {submitted_at.strftime('%d.%m.%Y %H:%M')}\n"
-                f"👤 Студент: [{user_name}](tg://user?id={user_id})\n"
-                f"📝 Задание: {task_title}\n"
-                f"📄 Текст решения: {content or 'отсутствует'}"
+                f"👤 Студент: {submission_data[2]}\n"
+                f"📚 Задание: {submission_data[3]}\n"
+                f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             )
+
+            # Отправка медиа
+            if submission_data[1]:
+                files = submission_data[1].split(',')
+                media_group = MediaGroupBuilder(caption=text)
+                
+                for file in files:
+                    if file.startswith('photo:'):
+                        media_group.add_photo(file[6:])
+                    elif file.startswith('doc:'):
+                        media_group.add_document(file[4:])
+                
+                await bot.send_media_group(ADMIN_ID, media=media_group.build())
+            else:
+                await bot.send_message(ADMIN_ID, text)
+
+    except Exception as e:
+        logger.error(f"Notification error: {str(e)}", exc_info=True)
 
             # Создаем клавиатуру для админа
             admin_kb = InlineKeyboardBuilder()
