@@ -154,6 +154,7 @@ db = Database()
 class Form(StatesGroup):
     full_name = State()
     course_selection = State()
+    waiting_for_solution = State()
 
 class AdminForm(StatesGroup):
     add_course_title = State()
@@ -187,6 +188,17 @@ def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✏️ Отправить решение", 
+        callback_data=f"submit_{task_id}"  # Формат: "submit_123"
+    )
+    builder.button(text="🔄 Отправить исправление", callback_data=f"retry_{task_id}")
+    builder.button(text="🔙 Назад к модулю", callback_data=f"back_to_module_{task_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+    
 def cancel_button():
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="cancel")
@@ -199,6 +211,18 @@ def support_keyboard():
     builder.adjust(1)
     return builder.as_markup()
 
+@dp.callback_query(F.data.startswith("submit_"))
+async def handle_submit_solution(callback: CallbackQuery, state: FSMContext):
+    try:
+        task_id = int(callback.data.split("_")[1])
+        await callback.message.answer("📤 Отправьте ваше решение (текст или файл):")
+        await state.set_state(TaskStates.waiting_for_solution)
+        await state.update_data(task_id=task_id)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Submit error: {str(e)}")
+        await callback.answer("❌ Ошибка отправки решения")
+        
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
     text = (
@@ -601,50 +625,57 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
 @dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
 async def process_solution(message: Message, state: FSMContext):
     data = await state.get_data()
-    task_id = data['task_id']
+    task_id = data.get('task_id')
     user_id = message.from_user.id
     
+    if not task_id:
+        await message.answer("❌ Ошибка: задача не определена")
+        await state.clear()
+        return
+
     try:
+        # Обработка контента
         file_ids = []
         content = None
         
         if message.content_type == 'text':
-            content = message.text
+            content = message.html_text  # Сохраняем форматирование
         elif message.photo:
-            file_ids = [f"photo:{photo.file_id}" for photo in message.photo]
+            file_ids = [f"photo:{message.photo[-1].file_id}"]
         elif message.document:
             file_ids = [f"doc:{message.document.file_id}"]
-
+        
+        # Валидация данных
         if not content and not file_ids:
-            await message.answer("❌ Пожалуйста, прикрепите файл или напишите текст решения")
+            await message.answer("❌ Решение должно содержать текст или файл")
             return
 
+        # Сохранение в БД
         with db.cursor() as cursor:
             cursor.execute('''
-                UPDATE submissions 
-                SET 
-                    content = %s,
-                    file_id = %s,
-                    submitted_at = NOW(),
-                    status = 'pending'
-                WHERE 
-                    user_id = %s AND 
-                    task_id = %s
-            ''', (content, ",".join(file_ids) if file_ids else None, user_id, task_id))
+                INSERT INTO submissions 
+                (user_id, task_id, content, file_id, status, submitted_at) 
+                VALUES (%s, %s, %s, %s, 'pending', NOW())
+                RETURNING submission_id
+            ''', (
+                user_id,
+                task_id,
+                content,
+                ",".join(file_ids) if file_ids else None
+            ))
+            
+            submission_id = cursor.fetchone()[0]
+            db.conn.commit()
 
-            if cursor.rowcount == 0:
-                cursor.execute('''
-                    INSERT INTO submissions 
-                    (user_id, task_id, content, file_id)
-                    VALUES (%s, %s, %s, %s)
-                ''', (user_id, task_id, content, ",".join(file_ids) if file_ids else None))
+        await message.answer("✅ Решение отправлено на проверку!\nОжидайте обратной связи.")
+        await notify_admin(submission_id, user_id)
 
-        await message.answer("✅ Решение обновлено! Ожидайте проверки.")
-        await notify_admin(task_id, user_id)
-
+    except psycopg2.Error as e:
+        logger.error(f"Database error: {str(e)}")
+        await message.answer("❌ Ошибка базы данных. Попробуйте позже.")
     except Exception as e:
-        logger.error(f"Solution processing error: {str(e)}")
-        await message.answer("❌ Ошибка сохранения решения")
+        logger.error(f"Unexpected error: {str(e)}")
+        await message.answer("⚠️ Произошла непредвиденная ошибка")
     finally:
         await state.clear()
 
