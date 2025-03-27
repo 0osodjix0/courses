@@ -777,33 +777,15 @@ async def notify_admin(submission_id: int, user_id: int):
                 f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             )
 
-            # Отправка медиа
-            if submission_data[1]:
-                files = submission_data[1].split(',')
-                media_group = MediaGroupBuilder(caption=text)
-                
-                for file in files:
-                    if file.startswith('photo:'):
-                        media_group.add_photo(file[6:])
-                    elif file.startswith('doc:'):
-                        media_group.add_document(file[4:])
-                
-                await bot.send_media_group(ADMIN_ID, media=media_group.build())
-            else:
-                await bot.send_message(ADMIN_ID, text)
-
-    except Exception as e:
-        logger.error(f"Notification error: {str(e)}", exc_info=True)
-
             # Создаем клавиатуру для админа
-        admin_kb = InlineKeyboardBuilder()
-        admin_kb.button(text="✅ Принять", callback_data=f"accept_{task_id}_{user_id}")
-        admin_kb.button(text="❌ Требует правок", callback_data=f"reject_{task_id}_{user_id}")
-        admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={user_id}")
+            admin_kb = InlineKeyboardBuilder()
+            admin_kb.button(text="✅ Принять", callback_data=f"accept_{submission_data[3]}_{user_id}")
+            admin_kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_data[3]}_{user_id}")
+            admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={user_id}")
 
             # Отправка медиафайлов
-        if file_ids:
-                files = file_ids.split(',')
+            if submission_data[1]:
+                files = submission_data[1].split(',')
                 media_group = MediaGroupBuilder()
                 first_media_sent = False
 
@@ -839,7 +821,7 @@ async def notify_admin(submission_id: int, user_id: int):
         await bot.send_message(
             ADMIN_ID,
             f"⚠️ Ошибка уведомления\n"
-            f"Задание: {task_id}\n"
+            f"ID решения: {submission_id}\n"
             f"Студент: {user_id}\n"
             f"Ошибка: {str(e)[:200]}"
         )
