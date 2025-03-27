@@ -802,7 +802,7 @@ async def notify_admin(submission_id: int, user_id: int):
         admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={user_id}")
 
             # Отправка медиафайлов
-            if file_ids:
+        if file_ids:
                 files = file_ids.split(',')
                 media_group = MediaGroupBuilder()
                 first_media_sent = False
