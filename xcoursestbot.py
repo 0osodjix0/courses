@@ -1,4 +1,4 @@
--=хъзimport os
+import os
 import logging
 import random
 import psycopg2
