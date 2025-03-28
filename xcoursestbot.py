@@ -180,21 +180,73 @@ def main_menu() -> types.ReplyKeyboardMarkup:
         one_time_keyboard=False  # Клавиатура остается открытой
     )
     
-def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(
-        text="✏️ Отправить решение", 
-        callback_data=f"submit_{task_id}"
-    )
-    builder.button(
-        text="🔄 Отправить исправление", 
-        callback_data=f"retry_{task_id}"
-    )
-    builder.button(
-        text="🔙 Назад к модулю", 
-        callback_data=f"module_from_task_{task_id}"  # Измененный формат
-    )
+def task_keyboard(task_id: int) -> types.ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.button(text=f"✏️ Отправить решение {task_id}")
+    builder.button(text=f"🔄 Отправить исправление {task_id}")
+    builder.button(text=f"🔙 Назад к модулю {task_id}")
     builder.adjust(1)
+    return builder.as_markup(
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Выберите действие"
+    )
+
+# Обработчики для текстовых команд
+@dp.message(F.text.startswith("✏️ Отправить решение"))
+async def handle_submit_solution(message: Message, state: FSMContext):
+    try:
+        task_id = int(message.text.split()[-1])
+        await message.answer("📤 Отправьте ваше решение (текст или файл):", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(TaskStates.waiting_for_solution)
+        await state.update_data(task_id=task_id)
+    except Exception as e:
+        logger.error(f"Submit error: {str(e)}")
+        await message.answer("❌ Ошибка отправки решения")
+
+@dp.message(F.text.startswith("🔄 Отправить исправление"))
+async def handle_retry_solution(message: Message, state: FSMContext):
+    try:
+        task_id = int(message.text.split()[-1])
+        # Логика для повторной отправки
+        await message.answer("🔄 Отправьте исправленное решение:", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(TaskStates.waiting_for_solution)
+        await state.update_data(task_id=task_id)
+    except Exception as e:
+        logger.error(f"Retry error: {str(e)}")
+        await message.answer("❌ Ошибка отправки исправления")
+
+@dp.message(F.text.startswith("🔙 Назад к модулю"))
+async def handle_back_to_module(message: Message):
+    try:
+        task_id = int(message.text.split()[-1])
+        # Логика возврата к модулю
+        await show_module_by_task(message, task_id)
+    except Exception as e:
+        logger.error(f"Back error: {str(e)}")
+        await message.answer("❌ Ошибка возврата", reply_markup=ReplyKeyboardRemove())
+
+async def show_module_by_task(message: Message, task_id: int):
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT m.module_id, m.title 
+            FROM tasks t
+            JOIN modules m ON t.module_id = m.module_id
+            WHERE t.task_id = %s
+        ''', (task_id,))
+        module_data = cursor.fetchone()
+    
+    if module_data:
+        await message.answer(
+            f"📦 Модуль: {module_data[1]}",
+            reply_markup=module_tasks_keyboard(module_data[0])
+        )
+    else:
+        await message.answer("❌ Модуль не найден")
+
+def module_tasks_keyboard(module_id: int) -> types.ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    # Добавление кнопок заданий модуля
     return builder.as_markup()
 
 # Добавляем обработчик для кнопки "Назад к модулю"
@@ -414,6 +466,7 @@ async def show_courses(message: types.Message):
     
     await message.answer(text, reply_markup=courses_kb())
 
+# Обработчик выбора курса
 @dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
     try:
@@ -421,22 +474,28 @@ async def select_course(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         
         with db.cursor() as cursor:
+            # Обновляем текущий курс пользователя
             cursor.execute(
                 "UPDATE users SET current_course = %s WHERE user_id = %s",
                 (course_id, user_id)
-            )
+            
+            # Получаем данные курса
             cursor.execute(
                 "SELECT title, media_id FROM courses WHERE course_id = %s",
-                (course_id,)
-            )
+                (course_id,))
             course = cursor.fetchone()
         
         text = f"✅ Вы выбрали курс: {course[0]}\nВыберите модуль:"
         kb = modules_kb(course_id)
         
+        # Отправка медиа с клавиатурой
         if course[1]:
             await callback.message.delete()
-            await callback.message.answer_photo(course[1], caption=text, reply_markup=kb)
+            await callback.message.answer_photo(
+                course[1], 
+                caption=text, 
+                reply_markup=kb
+            )
         else:
             await callback.message.edit_text(text, reply_markup=kb)
             
@@ -444,22 +503,22 @@ async def select_course(callback: types.CallbackQuery):
         logger.error(f"Ошибка выбора курса: {e}")
         await callback.answer("❌ Ошибка при выборе курса")
 
-def modules_kb(course_id: int):
+# Клавиатура модулей курса
+def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
     try:
         with db.cursor() as cursor:
             cursor.execute(
                 "SELECT module_id, title FROM modules WHERE course_id = %s",
-                (course_id,)
-            )
+                (course_id,))
             modules = cursor.fetchall()
         
         builder = InlineKeyboardBuilder()
         
         if modules:
-            for module in modules:
+            for module_id, title in modules:
                 builder.button(
-                    text=f"📂 {module[1]}",
-                    callback_data=f"module_{module[0]}"
+                    text=f"📂 {title}",
+                    callback_data=f"module_{module_id}"
                 )
         else:
             builder.button(
@@ -467,15 +526,19 @@ def modules_kb(course_id: int):
                 callback_data="no_modules"
             )
             
-        builder.button(text="🔙 Назад к курсам", callback_data="back_to_courses")
+        builder.button(
+            text="🔙 Назад к курсам", 
+            callback_data="all_courses"
+        )
         builder.adjust(1)
         
         return builder.as_markup()
         
     except Exception as e:
-        logger.error(f"Ошибка клавиатуры модулей: {e}")
+        logger.error(f"Ошибка формирования клавиатуры: {e}")
         return InlineKeyboardBuilder().as_markup()
 
+# Обработчик выбора задания
 @dp.callback_query(F.data.startswith("task_"))
 async def task_selected_handler(callback: types.CallbackQuery):
     try:
@@ -483,6 +546,7 @@ async def task_selected_handler(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         
         with db.cursor() as cursor:
+            # Получаем данные задания и статус решения
             cursor.execute('''
                 SELECT 
                     t.title, 
@@ -507,22 +571,21 @@ async def task_selected_handler(callback: types.CallbackQuery):
 
         title, content, file_id, file_type, status, score = task_data
         
+        # Формируем текст сообщения
         text = f"📝 <b>{title}</b>\n\n{content}"
-        
-        # Статус решения
-        status_text = {
+        status_map = {
             'pending': "⏳ На проверке",
             'accepted': "✅ Принято",
             'rejected': "❌ Требует доработки",
             'not_attempted': "🚫 Не начато"
-        }.get(status, "")
+        }
         
-        if status_text:
-            text += f"\n\nСтатус: {status_text}"
+        if status in status_map:
+            text += f"\n\nСтатус: {status_map[status]}"
             if score is not None:
                 text += f"\nОценка: {score}/100"
 
-        # Отправка медиа
+        # Отправка медиа контента
         try:
             if file_id and file_type:
                 if file_type == 'photo':
@@ -553,15 +616,93 @@ async def task_selected_handler(callback: types.CallbackQuery):
         await callback.message.edit_reply_markup(
             reply_markup=task_keyboard(task_id)
         )
-
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"Ошибка показа задания: {str(e)}")
+        logger.error(f"Ошибка загрузки задания: {str(e)}")
         await callback.answer("❌ Ошибка загрузки задания")
 
-# Обработчик выбора модуля
+# Унифицированный обработчик модулей
+async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
+    try:
+        with db.cursor() as cursor:
+            # Получаем данные модуля
+            cursor.execute('''
+                SELECT m.title, m.course_id, c.title 
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE m.module_id = %s
+            ''', (module_id,))
+            module_data = cursor.fetchone()
+            
+            if not module_data:
+                await callback.answer("❌ Модуль не найден")
+                return
+
+            module_title, course_id, course_title = module_data
+
+            # Получаем задания модуля
+            cursor.execute(
+                "SELECT task_id, title FROM tasks WHERE module_id = %s",
+                (module_id,))
+            tasks = cursor.fetchall()
+
+        builder = InlineKeyboardBuilder()
+        
+        if tasks:
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+            
+            builder.button(
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{course_id}"
+            )
+            builder.adjust(1)
+            
+            await callback.message.edit_text(
+                f"📚 Курс: {course_title}\n📦 Модуль: {module_title}\n\nВыберите задание:",
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+
+    except Exception as e:
+        logger.error(f"Ошибка загрузки модуля: {e}")
+        await callback.answer("❌ Ошибка загрузки модуля")
+
+# Обработчик кнопки возврата к модулю
+@dp.callback_query(F.data.startswith("module_from_task_"))
+async def back_to_module_handler(callback: types.CallbackQuery):
+    try:
+        task_id = int(callback.data.split("_")[-1])
+        
+        with db.cursor() as cursor:
+            cursor.execute(
+                "SELECT module_id FROM tasks WHERE task_id = %s",
+                (task_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                await callback.answer("❌ Модуль не найден")
+                return
+                
+            module_id = result[0]
+        
+        await handle_module_selection(callback, module_id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка возврата к модулю: {e}")
+        await callback.answer("❌ Ошибка загрузки модуля")
+
+# Обертка для обработчика модулей
 @dp.callback_query(F.data.startswith("module_"))
+async def handle_module_selection_wrapper(callback: types.CallbackQuery):
+    module_id = int(callback.data.split("_")[1])
+    await handle_module_selection(callback, module_id)
+    
 async def handle_module_selection(callback: types.CallbackQuery):
     try:
         module_id = int(callback.data.split("_")[1])
