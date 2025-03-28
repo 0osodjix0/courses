@@ -626,7 +626,6 @@ async def task_selected_handler(callback: types.CallbackQuery):
 async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
     try:
         with db.cursor() as cursor:
-            # Получаем данные модуля
             cursor.execute('''
                 SELECT m.title, m.course_id, c.title 
                 FROM modules m
@@ -641,10 +640,10 @@ async def handle_module_selection(callback: types.CallbackQuery, module_id: int)
 
             module_title, course_id, course_title = module_data
 
-            # Получаем задания модуля
             cursor.execute(
                 "SELECT task_id, title FROM tasks WHERE module_id = %s",
-                (module_id,))
+                (module_id,)
+            )
             tasks = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
@@ -701,10 +700,7 @@ async def back_to_module_handler(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("module_"))
 async def handle_module_selection_wrapper(callback: types.CallbackQuery):
     module_id = int(callback.data.split("_")[1])
-    await handle_module_selection(callback, module_id)  
-    
-async def handle_module_selection(callback: types.CallbackQuery):
-    try:
+    await handle_module_selection(callback, module_id)
         module_id = int(callback.data.split("_")[1])
         
         with db.cursor() as cursor:
