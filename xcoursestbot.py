@@ -432,35 +432,55 @@ async def process_solution(message: types.Message, state: FSMContext):
         await message.answer("❌ Не удалось сохранить решение", reply_markup=ReplyKeyboardRemove())
 
 async def show_module_after_submission(message: types.Message, module_id: int):
-    """Функция для показа модуля после отправки решения"""
-    with db.cursor() as cursor:
-        cursor.execute('''
-            SELECT m.title, c.course_id, c.title 
-            FROM modules m
-            JOIN courses c ON m.course_id = c.course_id
-            WHERE m.module_id = %s
-        ''', (module_id,))
-        module_data = cursor.fetchone()
+    """Функция для навигации после отправки решения"""
+    try:
+        with db.cursor() as cursor:
+            # Получаем ID курса и название модуля
+            cursor.execute('''
+                SELECT m.title, m.course_id 
+                FROM modules m
+                WHERE m.module_id = %s
+            ''', (module_id,))
+            module_data = cursor.fetchone()
+            
+            if not module_data:
+                await message.answer("❌ Модуль не найден")
+                return
 
-        cursor.execute('SELECT task_id, title FROM tasks WHERE module_id = %s', (module_id,))
-        tasks = cursor.fetchall()
+            module_title, course_id = module_data
+            
+            # Получаем задания модуля
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+            ''', (module_id,))
+            tasks = cursor.fetchall()
 
-    if not module_data:
-        await message.answer("❌ Ошибка: Модуль не найден")
-        return
+        builder = InlineKeyboardBuilder()
+        
+        # Кнопки заданий
+        for task_id, title in tasks:
+            builder.button(
+                text=f"📝 {title}",
+                callback_data=f"task_{task_id}"
+            )
+        
+        # Кнопка возврата к курсу с передачей course_id
+        builder.button(
+            text="🔙 Назад к курсу", 
+            callback_data=f"course_{course_id}"  # Используем числовой ID
+        )
+        builder.adjust(1)
 
-    builder = InlineKeyboardBuilder()
-    for task in tasks:
-        builder.button(text=f"📝 {task[1]}", callback_data=f"task_{task[0]}")
-    
-    # Теперь передаем course_id, а не название курса
-    builder.button(text="🔙 Назад к курсу", callback_data=f"course_{module_data[1]}")
-    builder.adjust(1)
+        await message.answer(
+            f"📦 Модуль: {module_title}\nВыберите задание:",
+            reply_markup=builder.as_markup()
+        )
 
-    await message.answer(
-        f"📦 Модуль: {module_data[0]}\nВыберите задание:",
-        reply_markup=builder.as_markup()
-    )
+    except Exception as e:
+        logger.error(f"Ошибка отображения модуля: {str(e)}")
+        await message.answer("❌ Ошибка загрузки модуля")
     
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
