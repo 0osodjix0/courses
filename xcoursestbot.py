@@ -353,13 +353,86 @@ async def back_to_main_menu(callback: CallbackQuery):
 async def handle_submit_solution(callback: CallbackQuery, state: FSMContext):
     try:
         task_id = int(callback.data.split("_")[1])
-        await callback.message.answer("📤 Отправьте ваше решение (текст или файл):")
         await state.set_state(TaskStates.waiting_for_solution)
         await state.update_data(task_id=task_id)
+        
+        # Показываем клавиатуру под строкой ввода
+        reply_markup = ReplyKeyboardBuilder()
+        reply_markup.button(text="❌ Отмена")
+        await callback.message.answer(
+            "📤 Отправьте ваше решение (текст или файл):",
+            reply_markup=reply_markup.as_markup(resize_keyboard=True)
+        )
         await callback.answer()
+
     except Exception as e:
         logger.error(f"Submit error: {str(e)}")
         await callback.answer("❌ Ошибка отправки решения")
+
+@dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
+async def process_solution(message: Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        task_id = data['task_id']
+        user_id = message.from_user.id
+        
+        # Сохранение решения в БД
+        with db.cursor() as cursor:
+            cursor.execute('''
+                INSERT INTO submissions 
+                (user_id, task_id, content, file_id, status)
+                VALUES (%s, %s, %s, %s, 'pending')
+                RETURNING submission_id
+            ''', (
+                user_id,
+                task_id,
+                message.text or None,
+                await get_file_id(message)  # Ваша функция для получения file_id
+            ))
+            submission_id = cursor.fetchone()[0]
+        
+        # Получаем module_id для возврата
+        cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
+        module_id = cursor.fetchone()[0]
+        
+        # Возвращаемся к списку заданий модуля
+        await handle_module_selection(message, module_id)
+        
+        await message.answer("✅ Решение отправлено на проверку!", reply_markup=ReplyKeyboardRemove())
+        await state.clear()
+
+    except Exception as e:
+        logger.error(f"Solution error: {str(e)}")
+        await message.answer("❌ Ошибка сохранения решения", reply_markup=ReplyKeyboardRemove())
+
+async def handle_module_selection(message: Message, module_id: int):
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT m.title, m.course_id, c.title 
+            FROM modules m
+            JOIN courses c ON m.course_id = c.course_id
+            WHERE m.module_id = %s
+        ''', (module_id,))
+        module_data = cursor.fetchone()
+
+        cursor.execute('''
+            SELECT task_id, title 
+            FROM tasks 
+            WHERE module_id = %s
+        ''', (module_id,))
+        tasks = cursor.fetchall()
+
+    builder = InlineKeyboardBuilder()
+    for task_id, title in tasks:
+        builder.button(text=f"📝 {title}", callback_data=f"task_{task_id}")
+    
+    builder.button(text="🔙 Назад к модулям", callback_data=f"course_{module_data[1]}")
+    builder.adjust(1)
+
+    await message.answer(
+        f"📚 Курс: {module_data[2]}\n📦 Модуль: {module_data[0]}\n\nВыберите задание:",
+        reply_markup=builder.as_markup()
+    )
         
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
@@ -548,72 +621,94 @@ async def task_selected_handler(callback: types.CallbackQuery):
         
         with db.cursor() as cursor:
             cursor.execute('''
-                SELECT 
-                    t.title, 
-                    t.content, 
-                    t.file_id,
-                    t.file_type,
-                    COALESCE(s.status, 'not_attempted') as status,
-                    s.score
+                SELECT t.title, t.content, t.file_id, t.file_type,
+                    COALESCE(s.status, 'not_attempted'), s.score
                 FROM tasks t
-                LEFT JOIN submissions s 
-                    ON s.task_id = t.task_id 
-                    AND s.user_id = %s
+                LEFT JOIN submissions s ON s.task_id = t.task_id AND s.user_id = %s
                 WHERE t.task_id = %s
-                ORDER BY s.submitted_at DESC
-                LIMIT 1
+                ORDER BY s.submitted_at DESC LIMIT 1
             ''', (user_id, task_id))
             task_data = cursor.fetchone()
-
-        if not task_data:
-            await callback.answer("❌ Задание не найдено")
-            return
 
         title, content, file_id, file_type, status, score = task_data
         
         text = f"📝 <b>{title}</b>\n\n{content}"
-        status_map = {
+        status_text = {
             'pending': "⏳ На проверке",
             'accepted': "✅ Принято",
             'rejected': "❌ Требует доработки",
             'not_attempted': "🚫 Не начато"
-        }
+        }.get(status, "")
         
-        if status in status_map:
-            text += f"\n\nСтатус: {status_map[status]}"
-            if score is not None:
-                text += f"\nОценка: {score}/100"
+        if status_text:
+            text += f"\n\nСтатус: {status_text}"
+            if score: text += f"\nОценка: {score}/100"
 
-        keyboard = task_keyboard(task_id)
+        # Inline клавиатура для действий с заданием
+        action_kb = InlineKeyboardBuilder()
+        action_kb.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
+        action_kb.button(text="🔄 Изменить решение", callback_data=f"retry_{task_id}")
+        action_kb.adjust(2)
 
-        try:
-            # Редактируем исходное сообщение вместо отправки нового
-            if file_id and file_type:
-                await callback.message.edit_media(
-                    media=InputMediaPhoto(media=file_id, caption=text) if file_type == 'photo' 
-                    else InputMediaDocument(media=file_id, caption=text),
-                    reply_markup=keyboard
+        # Основное сообщение с медиа
+        if file_id and file_type:
+            if file_type == 'photo':
+                await callback.message.answer_photo(
+                    file_id,
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=action_kb.as_markup()
                 )
             else:
-                await callback.message.edit_text(
-                    text,
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
+                await callback.message.answer_document(
+                    file_id,
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=action_kb.as_markup()
                 )
-
-        except Exception as e:
-            logger.error(f"Ошибка редактирования сообщения: {e}")
+        else:
             await callback.message.answer(
-                "⚠️ Не удалось обновить задание",
+                text,
                 parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
+                reply_markup=action_kb.as_markup()
             )
+
+        # Reply клавиатура под строкой ввода
+        reply_kb = ReplyKeyboardBuilder()
+        reply_kb.button(text="📚 К списку заданий")
+        reply_kb.button(text="🏠 В главное меню")
+        reply_kb.adjust(2)
+        
+        await callback.message.answer(
+            "Выберите действие:",
+            reply_markup=reply_kb.as_markup(resize_keyboard=True, one_time_keyboard=True)
+        )
 
         await callback.answer()
 
     except Exception as e:
         logger.error(f"Ошибка загрузки задания: {str(e)}")
         await callback.answer("❌ Ошибка загрузки задания")
+
+async def get_file_id(message: Message) -> Optional[str]:
+    if message.photo:
+        return message.photo[-1].file_id
+    if message.document:
+        return message.document.file_id
+    return None
+
+@dp.message(F.text == "📚 К списку заданий")
+async def back_to_tasks(message: Message):
+    # Логика возврата к последнему просмотренному модулю
+    pass
+
+@dp.message(F.text == "🏠 В главное меню")
+async def main_menu(message: Message):
+    await message.answer(
+        "Главное меню:",
+        reply_markup=main_menu_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
 
 # Унифицированный обработчик модулей
 async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
