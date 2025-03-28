@@ -1498,7 +1498,7 @@ async def back_handler(message: Message):
     # Добавьте логику возврата
 
 # Фильтр для игнорирования кнопок в других обработчиках
-class NotButtonFilter(Filter):
+class NotButtonFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
         return message.text not in ["❌ Отмена", "🔙 Назад"]
         
