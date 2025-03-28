@@ -566,53 +566,69 @@ async def show_courses(message: types.Message):
 @dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
     try:
-        # Извлекаем часть данных после префикса
-        course_part = callback.data.split("_", 1)[1]
-        
-        # Проверяем, что данные содержат числовой ID
-        if not course_part.isdigit():
-            raise ValueError("Некорректный ID курса")
-            
+        # Разделяем данные с ограничением в 1 разделение
+        parts = callback.data.split("_", 1)
+        if len(parts) != 2:
+            raise ValueError("Неверный формат callback данных")
+
+        course_part = parts[1]
+        logger.debug(f"Обработка выбора курса: {course_part}")
+
+        # Проверка наличия данных
+        if not course_part:
+            raise ValueError("Пустой ID курса")
+
+        # Строгая проверка числового формата
+        if not course_part.strip().isdigit():
+            raise ValueError(f"Некорректный ID курса: '{course_part}'")
+
         course_id = int(course_part)
         user_id = callback.from_user.id
-        
+
         with db.cursor() as cursor:
-            # Обновляем текущий курс пользователя
+            # Валидация существования курса
+            cursor.execute(
+                "SELECT course_id FROM courses WHERE course_id = %s",
+                (course_id,)
+            )
+            if not cursor.fetchone():
+                raise ValueError(f"Курс {course_id} не существует")
+
+            # Обновление курса пользователя
             cursor.execute(
                 "UPDATE users SET current_course = %s WHERE user_id = %s",
                 (course_id, user_id)
             )
-            
-            # Получаем данные курса
+
+            # Получение данных курса
             cursor.execute(
-                "SELECT title, media_id FROM courses WHERE course_id = %s",
+                """SELECT title, media_id 
+                FROM courses 
+                WHERE course_id = %s""",
                 (course_id,)
             )
             course = cursor.fetchone()
-            
-            if not course:
-                await callback.answer("❌ Курс не найден")
-                return
 
-        text = f"✅ Вы выбрали курс: {course[0]}\nВыберите модуль:"
+        # Формирование ответа
         kb = modules_kb(course_id)
-        
+        text = f"📚 Курс: {course[0]}\nВыберите модуль:"
+
         if course[1]:
             await callback.message.delete()
             await callback.message.answer_photo(
-                course[1], 
-                caption=text, 
+                course[1],
+                caption=text,
                 reply_markup=kb
             )
         else:
             await callback.message.edit_text(text, reply_markup=kb)
-            
+
     except ValueError as e:
-        logger.error(f"Ошибка формата ID курса: {e}")
-        await callback.answer("❌ Некорректный идентификатор курса")
+        logger.error(f"Ошибка валидации: {str(e)}")
+        await callback.answer("⚠️ Ошибка выбора курса", show_alert=True)
     except Exception as e:
-        logger.error(f"Ошибка выбора курса: {e}")
-        await callback.answer("❌ Ошибка при выборе курса")
+        logger.error(f"Критическая ошибка: {traceback.format_exc()}")
+        await callback.answer("❌ Произошла системная ошибка", show_alert=True)
         
 # Клавиатура модулей курса
 def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
