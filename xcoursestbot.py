@@ -395,10 +395,16 @@ async def handle_submit_solution(callback: types.CallbackQuery, state: FSMContex
 async def process_solution(message: types.Message, state: FSMContext):
     try:
         data = await state.get_data()
-        task_id = data['task_id']
+        task_id = data.get('task_id')
         user_id = message.from_user.id
-        file_id = await get_file_id(message)
-        content = message.text or None
+
+        # Получаем file_id или текст
+        file_id = await get_file_id(message) if message.content_type in ['document', 'photo'] else None
+        content = message.text if message.content_type == 'text' else None
+
+        if not task_id:
+            await message.answer("❌ Ошибка: ID задания не найден.")
+            return
 
         with db.cursor() as cursor:
             # Сохраняем решение
@@ -411,47 +417,19 @@ async def process_solution(message: types.Message, state: FSMContext):
             
             # Получаем module_id для навигации
             cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
-            module_id = cursor.fetchone()[0]
-            
+            module_data = cursor.fetchone()
+            module_id = module_data[0] if module_data else None
+
             db.conn.commit()
 
-        # Возвращаемся к списку заданий
-        await handle_module_selection(message, module_id)
+        if module_id:
+            await handle_module_selection(message, module_id)
         await message.answer("✅ Решение успешно отправлено!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
 
     except Exception as e:
         logger.error(f"Ошибка сохранения: {str(e)}")
         await message.answer("❌ Не удалось сохранить решение", reply_markup=ReplyKeyboardRemove())
-        
-async def handle_module_selection(message: Message, module_id: int):
-    with db.cursor() as cursor:
-        cursor.execute('''
-            SELECT m.title, m.course_id, c.title 
-            FROM modules m
-            JOIN courses c ON m.course_id = c.course_id
-            WHERE m.module_id = %s
-        ''', (module_id,))
-        module_data = cursor.fetchone()
-
-        cursor.execute('''
-            SELECT task_id, title 
-            FROM tasks 
-            WHERE module_id = %s
-        ''', (module_id,))
-        tasks = cursor.fetchall()
-
-    builder = InlineKeyboardBuilder()
-    for task_id, title in tasks:
-        builder.button(text=f"📝 {title}", callback_data=f"task_{task_id}")
-    
-    builder.button(text="🔙 Назад к модулям", callback_data=f"course_{module_data[1]}")
-    builder.adjust(1)
-
-    await message.answer(
-        f"📚 Курс: {module_data[2]}\n📦 Модуль: {module_data[0]}\n\nВыберите задание:",
-        reply_markup=builder.as_markup()
-    )
         
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
