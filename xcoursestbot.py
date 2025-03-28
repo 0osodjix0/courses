@@ -79,10 +79,10 @@ class Database:
         self.conn.autocommit = False
 
     def _init_tables(self):
-        """Инициализация таблиц в PostgreSQL"""
+        """Инициализация таблиц в PostgreSQL (без удаления существующих данных)"""
         with self.conn.cursor() as cursor:
             try:
-                # Создание основных таблиц
+                # Создаем таблицы, если они не существуют
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -129,9 +129,14 @@ class Database:
                         content TEXT
                     )''')
 
-                # Добавляем новые колонки при необходимости
+                # Безопасное добавление новых колонок к существующим таблицам
                 cursor.execute('''
                     ALTER TABLE tasks 
+                    ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
+                ''')
+
+                cursor.execute('''
+                    ALTER TABLE submissions 
                     ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
                 ''')
 
