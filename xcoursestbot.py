@@ -718,80 +718,75 @@ def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
 
 # Обработчик выбора задания
 @dp.callback_query(F.data.startswith("task_"))
-async def task_selected_handler(callback: types.CallbackQuery):
+async def show_single_task(callback: types.CallbackQuery):
     try:
         task_id = int(callback.data.split("_")[1])
-        user_id = callback.from_user.id
         
         with db.cursor() as cursor:
             cursor.execute('''
-                SELECT t.title, t.content, t.file_id, t.file_type,
-                    COALESCE(s.status, 'not_attempted'), s.score
+                SELECT 
+                    t.module_id, 
+                    t.title, 
+                    t.content,
+                    t.file_id,
+                    t.file_type,
+                    COALESCE(s.status, 'not_attempted')
                 FROM tasks t
-                LEFT JOIN submissions s ON s.task_id = t.task_id AND s.user_id = %s
+                LEFT JOIN submissions s 
+                    ON s.task_id = t.task_id 
+                    AND s.user_id = %s
                 WHERE t.task_id = %s
-                ORDER BY s.submitted_at DESC LIMIT 1
-            ''', (user_id, task_id))
-            task_data = cursor.fetchone()
+            ''', (callback.from_user.id, task_id))
+            tsk_data = cursor.fetchone()
 
-        title, content, file_id, file_type, status, score = task_data
+        if not tsk_data:
+            await callback.answer("❌ Задание не найдено")
+            return
+
+        module_id, title, content, file_id, file_type, status = tsk_data
+        status_icon = "🟡" if status == "pending" else "✅" if status == "accepted" else "❌"
+
+        builder = InlineKeyboardBuilder()
         
-        text = f"📝 <b>{title}</b>\n\n{content}"
-        status_text = {
-            'pending': "⏳ На проверке",
-            'accepted': "✅ Принято",
-            'rejected': "❌ Требует доработки",
-            'not_attempted': "🚫 Не начато"
-        }.get(status, "")
+        # Добавляем кнопку возврата к списку заданий
+        builder.button(
+            text=f"📋 К списку заданий ({status_icon})", 
+            callback_data=f"list_tasks_{module_id}"
+        )
         
-        if status_text:
-            text += f"\n\nСтатус: {status_text}"
-            if score: text += f"\nОценка: {score}/100"
+        builder.button(
+            text="✏️ Отправить решение", 
+            callback_data=f"submit_{task_id}"
+        )
+        builder.button(
+            text="🔄 История попыток", 
+            callback_data=f"attempts_{task_id}"
+        )
+        
+        builder.adjust(1, 2)  # Отдельная строка для списка, затем 2 в ряд
 
-        # Inline клавиатура для действий с заданием
-        action_kb = InlineKeyboardBuilder()
-        action_kb.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
-        action_kb.button(text="🔄 Изменить решение", callback_data=f"retry_{task_id}")
-        action_kb.adjust(2)
-
-        # Основное сообщение с медиа
-        if file_id and file_type:
-            if file_type == 'photo':
-                await callback.message.answer_photo(
-                    file_id,
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=action_kb.as_markup()
-                )
-            else:
-                await callback.message.answer_document(
-                    file_id,
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=action_kb.as_markup()
-                )
+        # Отправка контента задания
+        if file_id and file_type == 'photo':
+            await callback.message.edit_media(
+                InputMediaPhoto(
+                    media=file_id,
+                    caption=f"📌 {title}\n\n{content}"
+                ),
+                reply_markup=builder.as_markup()
+            )
+        elif file_id:
+            await callback.message.edit_caption(
+                caption=f"📌 {title}\n\n{content}",
+                reply_markup=builder.as_markup()
+            )
         else:
-            await callback.message.answer(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=action_kb.as_markup()
+            await callback.message.edit_text(
+                f"📌 {title}\n\n{content}",
+                reply_markup=builder.as_markup()
             )
 
-        # Reply клавиатура под строкой ввода
-        reply_kb = ReplyKeyboardBuilder()
-        reply_kb.button(text="📚 К списку заданий")
-        reply_kb.button(text="🏠 В главное меню")
-        reply_kb.adjust(2)
-        
-        await callback.message.answer(
-            "Выберите действие:",
-            reply_markup=reply_kb.as_markup(resize_keyboard=True, one_time_keyboard=True)
-        )
-
-        await callback.answer()
-
     except Exception as e:
-        logger.error(f"Ошибка загрузки задания: {str(e)}")
+        logger.error(f"Ошибка показа задания: {str(e)}")
         await callback.answer("❌ Ошибка загрузки задания")
 
 async def get_file_id(message: Message) -> Optional[str]:
