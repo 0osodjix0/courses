@@ -45,20 +45,15 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 parsed_db = urlparse(DATABASE_URL)
 
 class CleanupMiddleware(BaseMiddleware):
-    async def __call__(
-        self,
-        handler: Callable[[types.Message, dict], Awaitable[Any]],
-        event: types.Message,
-        data: dict
-    ) -> Any:
+    async def __call__(self, handler, event, data):
         if event.text in ["❌ Отмена", "🔙 Назад"]:
-            state = data.get("state")
+            state = data.get("fsm_context")
             if state:
                 await state.clear()
         return await handler(event, data)
 
-# Регистрация Middleware
-dp.message.middleware.register(CleanupMiddleware())
+# Регистрация middleware
+dp.message.middleware(CleanupMiddleware())
 
 class Database:
     def __init__(self):
