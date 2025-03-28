@@ -398,28 +398,31 @@ async def process_solution(message: types.Message, state: FSMContext):
         task_id = data['task_id']
         user_id = message.from_user.id
         file_id = await get_file_id(message)
-        content = message.text if message.text else None
+        content = message.text or None
 
         with db.cursor() as cursor:
-            # Исправленный SQL-запрос
+            # Сохраняем решение
             cursor.execute('''
                 INSERT INTO submissions 
-                (user_id, task_id, content, file_id, status, submitted_at) 
+                (user_id, task_id, content, file_id, status, submitted_at)
                 VALUES (%s, %s, %s, %s, 'pending', NOW())
                 RETURNING submission_id
             ''', (user_id, task_id, content, file_id))
             
+            # Получаем module_id для навигации
             cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
             module_id = cursor.fetchone()[0]
+            
             db.conn.commit()
 
+        # Возвращаемся к списку заданий
         await handle_module_selection(message, module_id)
-        await message.answer("✅ Решение отправлено!", reply_markup=ReplyKeyboardRemove())
+        await message.answer("✅ Решение успешно отправлено!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
 
     except Exception as e:
-        logger.error(f"Solution error: {str(e)}")
-        await message.answer("❌ Ошибка сохранения решения", reply_markup=ReplyKeyboardRemove())
+        logger.error(f"Ошибка сохранения: {str(e)}")
+        await message.answer("❌ Не удалось сохранить решение", reply_markup=ReplyKeyboardRemove())
         
 async def handle_module_selection(message: Message, module_id: int):
     with db.cursor() as cursor:
@@ -727,7 +730,7 @@ async def main_menu(message: Message):
     )
 
 # Унифицированный обработчик модулей
-async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
+async def handle_module_selection(message: types.Message, module_id: int):
     try:
         with db.cursor() as cursor:
             cursor.execute('''
@@ -737,44 +740,25 @@ async def handle_module_selection(callback: types.CallbackQuery, module_id: int)
                 WHERE m.module_id = %s
             ''', (module_id,))
             module_data = cursor.fetchone()
-            
-            if not module_data:
-                await callback.answer("❌ Модуль не найден")
-                return
 
-            module_title, course_id, course_title = module_data
-
-            cursor.execute(
-                "SELECT task_id, title FROM tasks WHERE module_id = %s",
-                (module_id,)
-            )
+            cursor.execute('SELECT task_id, title FROM tasks WHERE module_id = %s', (module_id,))
             tasks = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
+        for task_id, title in tasks:
+            builder.button(text=f"📝 {title}", callback_data=f"task_{task_id}")
         
-        if tasks:
-            for task_id, title in tasks:
-                builder.button(
-                    text=f"📝 {title}",
-                    callback_data=f"task_{task_id}"
-                )
-            
-            builder.button(
-                text="🔙 К модулям курса", 
-                callback_data=f"course_{course_id}"
-            )
-            builder.adjust(1)
-            
-            await callback.message.edit_text(
-                f"📚 Курс: {course_title}\n📦 Модуль: {module_title}\n\nВыберите задание:",
-                reply_markup=builder.as_markup()
-            )
-        else:
-            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+        builder.button(text="🔙 Назад к модулям курса", callback_data=f"course_{module_data[1]}")
+        builder.adjust(1)
+
+        await message.answer(
+            f"📚 Курс: {module_data[2]}\n📦 Модуль: {module_data[0]}\n\nВыберите задание:",
+            reply_markup=builder.as_markup()
+        )
 
     except Exception as e:
-        logger.error(f"Ошибка загрузки модуля: {e}")
-        await callback.answer("❌ Ошибка загрузки модуля")
+        logger.error(f"Ошибка модуля: {str(e)}")
+        await message.answer("❌ Ошибка загрузки модуля")
 
 # Обработчик кнопки возврата к модулю
 @dp.callback_query(F.data.startswith("module_from_task_"))
