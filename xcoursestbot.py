@@ -897,25 +897,22 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 
 # Универсальный обработчик ошибок
 @dp.errors()
-async def global_error_handler(update: types.Update, exception: Exception, bot: Bot) -> bool:
+async def global_error_handler(event: types.Update, exception: Exception) -> bool:
     """Глобальный обработчик всех исключений"""
     logger.critical("Critical error: %s", exception, exc_info=True)
     
     try:
-        # Уведомление пользователя
-        if update.callback_query:
-            await update.callback_query.answer("⚠️ Произошла ошибка", show_alert=True)
-        elif update.message:
-            await update.message.answer("🚨 Системная ошибка. Попробуйте позже.")
+        if event.callback_query:
+            await event.callback_query.answer("⚠️ Произошла ошибка", show_alert=True)
+        elif event.message:
+            await event.message.answer("🚨 Системная ошибка. Попробуйте позже.")
         
-        # Отправка уведомления админу
-        await bot.send_message(
+        await dp.bot.send_message(
             ADMIN_ID,
-            f"🔥 Critical Error:\n{exception}\n\n"
-            f"Update: {update.model_dump_json()}"
+            f"🔥 Ошибка:\n{exception}\n\nUpdate: {event.model_dump_json()}"
         )
     except Exception as e:
-        logger.error("Error handling error: %s", e)
+        logger.error("Ошибка в обработчике ошибок: %s", e)
     
     return True
 
@@ -1185,9 +1182,7 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
 
 ### 3. Единый обработчик отправки решений ###
 async def notify_admin(submission_id: int):
-    """Уведомление администратора о новом решении"""
     try:
-        admin_id = int(os.getenv('ADMIN_ID'))
         with db.cursor() as cursor:
             cursor.execute('''
                 SELECT s.file_id, s.file_type, s.content,
@@ -1197,25 +1192,17 @@ async def notify_admin(submission_id: int):
                 JOIN tasks t ON s.task_id = t.task_id
                 WHERE s.submission_id = %s
             ''', (submission_id,))
-            
             data = cursor.fetchone()
-            if not data:
-                logger.error("Решение не найдено")
-                return
+            
+            if not data: return
 
             file_id, file_type, content, full_name, title, student_id = data
+            text = f"📬 Новое решение #{submission_id}\n👤 Студент: {full_name}\n📚 Задание: {title}"
 
-            text = (
-                f"📬 Новое решение #{submission_id}\n"
-                f"👤 Студент: {full_name}\n"
-                f"📚 Задание: {title}\n"
-                f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-            )
-
-            # Создаем интерактивную клавиатуру
             kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
-            kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}")
+            # Добавляем user_id в callback_data
+            kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}_{student_id}")
+            kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}_{student_id}")
             kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_id}")
             kb.adjust(2, 1)
 
@@ -1267,23 +1254,17 @@ async def cancel_solution(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
     try:
-        # Проверка и парсинг данных
         data = callback.data.split('_')
         if len(data) != 3:
-            raise ValueError(f"Invalid callback data: {callback.data}")
+            raise ValueError(f"Некорректные данные: {callback.data}")
             
         action, submission_id_str, user_id_str = data
         
-        # Валидация ID
         submission_id = int(submission_id_str)
         student_id = int(user_id_str)
-        
-        # Определение статуса
         new_status = "accepted" if action == "accept" else "rejected"
-        status_emoji = "✅" if action == "accept" else "❌"
 
         with db.cursor() as cursor:
-            # Обновление статуса и получение task_id
             cursor.execute('''
                 UPDATE submissions 
                 SET status = %s 
@@ -1291,35 +1272,20 @@ async def handle_submission_review(callback: types.CallbackQuery):
                 RETURNING task_id
             ''', (new_status, submission_id))
             
-            result = cursor.fetchone()
-            if not result:
-                await callback.answer("❌ Решение не найдено")
-                return
-                
-            task_id = result[0]
-
-            # Получение названия задания
-            cursor.execute('''
-                SELECT title 
-                FROM tasks 
-                WHERE task_id = %s
-            ''', (task_id,))
-            
+            task_id = cursor.fetchone()[0]
+            cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
             task_title = cursor.fetchone()[0]
-            db.conn.commit()
 
-        # Уведомление студента
-        try:
-            await bot.send_message(
-                chat_id=student_id,
-                text=f"📢 Ваше решение по заданию «{task_title}» {status_emoji}\nСтатус: {new_status.capitalize()}"
-            )
-        except Exception as e:
-            logger.error(f"Не удалось уведомить студента {student_id}: {str(e)}")
-
-        # Удаление сообщения с кнопками
+        await dp.bot.send_message(
+            student_id,
+            f"📢 Ваше решение по заданию «{task_title}» {new_status}"
+        )
         await callback.message.delete()
-        await callback.answer(f"Статус обновлен {status_emoji}")
+        await callback.answer(f"Статус обновлен: {new_status}")
+
+    except Exception as e:
+        logger.error("Ошибка проверки задания: %s", e)
+        await callback.answer("❌ Ошибка обновления статуса")
 
     except (ValueError, IndexError) as e:
         logger.error(f"Ошибка данных: {str(e)} | Data: {callback.data}")
