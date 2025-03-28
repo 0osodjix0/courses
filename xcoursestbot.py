@@ -587,73 +587,94 @@ async def show_courses(message: types.Message):
     
     await message.answer(text, reply_markup=courses_kb())
 
-# Обработчик выбора курса
-@dp.callback_query(F.data.startswith("course_"))
+# Обработчик выбора курса@dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
     try:
-        # Разделяем данные с ограничением в 1 разделение
-        parts = callback.data.split("_", 1)
-        if len(parts) != 2:
-            raise ValueError("Неверный формат callback данных")
+        # Разбираем callback_data с защитой от переполнения
+        _, *rest = callback.data.split('_', maxsplit=1)
+        if not rest:
+            raise ValueError("Неверный формат данных")
+        
+        course_part = rest[0]
+        logger.debug(f"Attempting to process course: {course_part}")
 
-        course_part = parts[1]
-        logger.debug(f"Обработка выбора курса: {course_part}")
-
-        # Проверка наличия данных
-        if not course_part:
-            raise ValueError("Пустой ID курса")
-
-        # Строгая проверка числового формата
-        if not course_part.strip().isdigit():
-            raise ValueError(f"Некорректный ID курса: '{course_part}'")
-
+        # Глубокая проверка числового формата
+        if not course_part.isdecimal():
+            raise ValueError(f"Некорректный формат ID: {course_part}")
+            
         course_id = int(course_part)
-        user_id = callback.from_user.id
-
+        
+        # Валидация существования курса
         with db.cursor() as cursor:
-            # Валидация существования курса
-            cursor.execute(
-                "SELECT course_id FROM courses WHERE course_id = %s",
-                (course_id,)
-            )
-            if not cursor.fetchone():
+            cursor.execute("""
+                SELECT EXISTS(
+                    SELECT 1 
+                    FROM courses 
+                    WHERE course_id = %s
+                )""", (course_id,))
+            exists = cursor.fetchone()[0]
+            
+            if not exists:
                 raise ValueError(f"Курс {course_id} не существует")
 
-            # Обновление курса пользователя
-            cursor.execute(
-                "UPDATE users SET current_course = %s WHERE user_id = %s",
-                (course_id, user_id)
-            )
+            # Атомарная транзакция
+            cursor.execute("""
+                WITH user_update AS (
+                    UPDATE users 
+                    SET current_course = %s 
+                    WHERE user_id = %s
+                    RETURNING *
+                )
+                SELECT 
+                    c.title,
+                    c.media_id
+                FROM courses c
+                WHERE c.course_id = %s""", 
+                (course_id, callback.from_user.id, course_id))
+                
+            course_data = cursor.fetchone()
+            
+            if not course_data:
+                raise RuntimeError("Данные курса не найдены")
 
-            # Получение данных курса
-            cursor.execute(
-                """SELECT title, media_id 
-                FROM courses 
-                WHERE course_id = %s""",
-                (course_id,)
-            )
-            course = cursor.fetchone()
-
+        title, media_id = course_data
+        
         # Формирование ответа
-        kb = modules_kb(course_id)
-        text = f"📚 Курс: {course[0]}\nВыберите модуль:"
+        kb = modules_kb(course_id)  # Гарантированно безопасный вызов
+        response_text = f"📚 Курс: {title}\nВыберите модуль:"
 
-        if course[1]:
+        if media_id:
             await callback.message.delete()
             await callback.message.answer_photo(
-                course[1],
-                caption=text,
+                media_id,
+                caption=response_text,
                 reply_markup=kb
             )
         else:
-            await callback.message.edit_text(text, reply_markup=kb)
+            await callback.message.edit_text(
+                text=response_text,
+                reply_markup=kb
+            )
 
     except ValueError as e:
-        logger.error(f"Ошибка валидации: {str(e)}")
-        await callback.answer("⚠️ Ошибка выбора курса", show_alert=True)
+        logger.warning(f"Validation error: {str(e)}")
+        await callback.answer(
+            "⚠️ Невозможно обработать этот курс",
+            show_alert=True,
+            cache_time=60
+        )
     except Exception as e:
-        logger.error(f"Критическая ошибка: {traceback.format_exc()}")
-        await callback.answer("❌ Произошла системная ошибка", show_alert=True)
+        logger.critical(
+            f"Critical error in course selection: {traceback.format_exc()}"
+        )
+        await callback.answer(
+            "⛔ Произошла критическая ошибка. Попробуйте позже.",
+            show_alert=True
+        )
+        await bot.send_message(
+            ADMIN_ID,
+            f"🚨 Course selection error:\n{str(e)[:300]}"
+        )
         
 # Клавиатура модулей курса
 def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
