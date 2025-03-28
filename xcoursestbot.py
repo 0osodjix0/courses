@@ -603,24 +603,27 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
         
         with db.cursor() as cursor:
+            # Проверяем наличие отклоненных решений
             cursor.execute('''
                 SELECT submission_id FROM submissions
                 WHERE user_id = %s AND task_id = %s AND status = 'rejected'
                 ORDER BY submitted_at DESC LIMIT 1
             ''', (user_id, task_id))
+            
             if not cursor.fetchone():
                 await callback.answer("❌ Нет отклоненных решений для повторной отправки")
                 return
 
+            # Обновляем статус предыдущих решений
             cursor.execute('''
                 UPDATE submissions 
-                SET 
-                    status = 'pending',
+                SET status = 'pending',
                     score = NULL,
                     submitted_at = NOW()
                 WHERE user_id = %s AND task_id = %s
             ''', (user_id, task_id))
-        
+            db.conn.commit()
+
         await callback.message.answer("🔄 Отправьте исправленное решение:")
         await state.set_state(TaskStates.waiting_for_solution)
         await state.update_data(task_id=task_id)
@@ -630,7 +633,7 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
         logger.error(f"Retry submission error: {str(e)}")
         await callback.answer("❌ Ошибка повторной отправки")
 
-### 3. Обновляем обработчик отправки решений ###
+### 3. Единый обработчик отправки решений ###
 @dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
 async def process_solution(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -646,6 +649,7 @@ async def process_solution(message: Message, state: FSMContext):
         file_ids = []
         content = None
         
+        # Обработка контента
         if message.content_type == 'text':
             content = message.html_text
         elif message.photo:
@@ -658,17 +662,24 @@ async def process_solution(message: Message, state: FSMContext):
             return
 
         with db.cursor() as cursor:
+            # Вставляем новое решение
             cursor.execute('''
                 INSERT INTO submissions 
                 (user_id, task_id, content, file_id, status, submitted_at) 
                 VALUES (%s, %s, %s, %s, 'pending', NOW())
                 RETURNING submission_id
-            ''', (user_id, task_id, content, ",".join(file_ids) if file_ids else None))
+            ''', (
+                user_id,
+                task_id,
+                content,
+                ",".join(file_ids) if file_ids else None
+            ))
             
             submission_id = cursor.fetchone()[0]
+            db.conn.commit()
 
         await message.answer("✅ Решение отправлено на проверку!")
-        await notify_admin(submission_id, user_id)  # Передаем оба аргумента
+        await notify_admin(submission_id)  # Исправленный вызов
 
     except psycopg2.Error as e:
         logger.error(f"Database error: {str(e)}")
@@ -676,60 +687,6 @@ async def process_solution(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         await message.answer("⚠️ Произошла ошибка")
-    finally:
-        await state.clear()
-@dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
-async def process_solution(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data['task_id']
-    user_id = message.from_user.id
-    
-    try:
-        file_ids = []
-        content = None
-        
-        # Обработка различных типов контента
-        if message.content_type == 'text':
-            content = message.text
-        elif message.photo:
-            file_ids = [f"photo:{photo.file_id}" for photo in message.photo]
-        elif message.document:
-            file_ids = [f"doc:{message.document.file_id}"]
-
-        # Валидация входящих данных
-        if not content and not file_ids:
-            await message.answer("❌ Пожалуйста, прикрепите файл или напишите текст решения")
-            return
-
-        # Сохранение в базу данных
-        with db.cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO submissions 
-                (user_id, task_id, submitted_at, file_id, content)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING submission_id""",
-                (
-                    user_id,
-                    task_id,
-                    datetime.now(),
-                    ",".join(file_ids) if file_ids else None,
-                    content
-                )
-            )
-            submission_id = cursor.fetchone()[0]
-
-        await message.answer("✅ Решение успешно отправлено на проверку!")
-        await notify_admin(submission_id, task_id, user_id)
-
-    except IntegrityError as e:
-        logger.error(f"Integrity error: {e}")
-        await message.answer("❌ Ошибка: Некорректные данные решения")
-    except OperationalError as e:
-        logger.error(f"Database connection error: {e}")
-        await message.answer("❌ Ошибка подключения к базе данных")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        await message.answer("⚠️ Произошла непредвиденная ошибка")
     finally:
         await state.clear()
 
@@ -754,13 +711,12 @@ async def send_media_with_caption(file_type: str, file_id: str, caption: str, ke
     except Exception as e:
         logger.error(f"Error sending media: {e}")
 
-async def notify_admin(submission_id: int):  # Убрали user_id из параметров
+async def notify_admin(submission_id: int):
     """Уведомление администратора о новом решении"""
     try:
         with db.cursor() as cursor:
-            # Добавили s.user_id в запрос
             cursor.execute('''
-                SELECT s.content, s.file_id, u.full_name, t.title, s.task_id, s.user_id
+                SELECT s.content, s.file_id, u.full_name, t.title, s.user_id
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
@@ -771,17 +727,15 @@ async def notify_admin(submission_id: int):  # Убрали user_id из пар�
             if not submission_data:
                 return
 
-            student_user_id = submission_data[5]  # Получаем user_id студента
+            content, file_id, full_name, title, student_user_id = submission_data
 
-            # Формируем текст сообщения
             text = (
                 f"📬 Новое решение (#{submission_id})\n"
-                f"👤 Студент: {submission_data[2]}\n"
-                f"📚 Задание: {submission_data[3]}\n"
+                f"👤 Студент: {full_name}\n"
+                f"📚 Задание: {title}\n"
                 f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             )
 
-            # Используем student_user_id из базы
             admin_kb = InlineKeyboardBuilder()
             admin_kb.button(
                 text="✅ Принять", 
@@ -797,13 +751,14 @@ async def notify_admin(submission_id: int):  # Убрали user_id из пар�
             )
             admin_kb.adjust(2, 1)
 
-            # Добавили отправку сообщения
-            if submission_data[1]:  # Если есть файл
-                await bot.send_document(
-                    ADMIN_ID,
-                    submission_data[1],
-                    caption=text,
-                    reply_markup=admin_kb.as_markup()
+            # Отправка медиафайлов
+            if file_id:
+                file_type, fid = file_id.split(":", 1)
+                await send_media_with_caption(
+                    file_type, 
+                    fid, 
+                    text, 
+                    admin_kb.as_markup()
                 )
             else:
                 await bot.send_message(
@@ -818,7 +773,7 @@ async def notify_admin(submission_id: int):  # Убрали user_id из пар�
             ADMIN_ID,
             f"⚠️ Ошибка уведомления\nID решения: {submission_id}\nОшибка: {str(e)[:200]}"
         )
-
+        
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
     try:
