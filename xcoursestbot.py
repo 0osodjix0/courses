@@ -1008,13 +1008,22 @@ async def back_to_module_handler(callback: types.CallbackQuery):
 
 # Обертка для обработчика модулей
 @dp.callback_query(F.data.startswith("module_"))
-async def handle_module_selection_wrapper(callback: types.CallbackQuery):
+async def handle_module_selection(callback: types.CallbackQuery):
     try:
-        module_id = int(callback.data.split("_")[1])
-        await handle_module_selection(callback, module_id)
-    except Exception as e:
-        logger.error(f"Ошибка обработки модуля: {e}")
-        await callback.answer("❌ Ошибка загрузки модуля")
+        module_id = int(callback.data.split('_')[1])
+        
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT m.title, m.course_id, c.title 
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE m.module_id = %s
+            ''', (module_id,))
+            module_data = cursor.fetchone()
+            
+            if not module_data:
+                await callback.answer("❌ Модуль не найден")
+                return
 
 # Основная функция обработки модуля
 async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
@@ -1066,55 +1075,7 @@ async def handle_module_selection(callback: types.CallbackQuery, module_id: int)
         )
     else:
         await callback.answer("ℹ️ В этом модуле пока нет заданий")
-        
-# Обработчик возврата к списку модулей курса
-@dp.callback_query(F.data.startswith("course_"))
-async def select_course(callback: types.CallbackQuery):
-    await callback.message.answer(...)
-    try:
-        course_id = int(callback.data.split("_")[1])
-        
-        with db.cursor() as cursor:
-            # Информация о курсе
-            cursor.execute(
-                "SELECT title FROM courses WHERE course_id = %s",
-                (course_id,)
-            )
-            course_title = cursor.fetchone()[0]
-
-            # Получаем модули курса
-            cursor.execute('''
-                SELECT module_id, title 
-                FROM modules 
-                WHERE course_id = %s
-            ''', (course_id,))
-            modules = cursor.fetchall()
-
-        builder = InlineKeyboardBuilder()
-        
-        for module_id, title in modules:
-            builder.button(
-                text=f"📦 {title}", 
-                callback_data=f"module_{module_id}"
-            )
-        
-        # Кнопка возврата к списку курсов
-        builder.button(
-            text="🔙 К списку курсов", 
-            callback_data="all_courses"
-        )
-        builder.adjust(1)
-
-        await callback.message.edit_text(
-            f"📚 Курс: {course_title}\nВыберите модуль:",
-            reply_markup=builder.as_markup()
-        )
-
-    except Exception as e:
-        logger.error(f"Ошибка загрузки курса: {e}")
-        await callback.answer("❌ Ошибка загрузки курса")
-
-# Обработчик списка всех курсов
+        # Обработчик списка всех курсов
 @dp.callback_query(F.data == "all_courses")
 async def show_all_courses(callback: types.CallbackQuery):
     try:
@@ -1492,6 +1453,51 @@ async def execute_course_delete(callback: CallbackQuery):
     await callback.message.edit_text("Курс удален", reply_markup=None)
 
 ### BLOCK 6: CONTENT CREATION ###
+
+@dp.callback_query(F.data.startswith("course_"))
+async def select_course_handler(callback: types.CallbackQuery):
+    try:
+        course_id = int(callback.data.split('_')[1])
+        
+        with db.cursor() as cursor:
+            # Обновляем курс пользователя
+            cursor.execute("""
+                UPDATE users 
+                SET current_course = %s 
+                WHERE user_id = %s
+            """, (course_id, callback.from_user.id))
+            
+            # Получаем информацию о курсе
+            cursor.execute("""
+                SELECT title, media_id 
+                FROM courses 
+                WHERE course_id = %s
+            """, (course_id,))
+            course_data = cursor.fetchone()
+
+            if not course_data:
+                await callback.answer("❌ Курс не найден")
+                return
+
+            title, media_id = course_data
+            modules = modules_kb(course_id)
+            
+            if media_id:
+                await callback.message.delete()
+                await callback.message.answer_photo(
+                    media_id,
+                    caption=f"📚 Курс: {title}\nВыберите модуль:",
+                    reply_markup=modules
+                )
+            else:
+                await callback.message.edit_text(
+                    text=f"📚 Курс: {title}\nВыберите модуль:",
+                    reply_markup=modules
+                )
+
+    except Exception as e:
+        logger.error("Ошибка выбора курса: %s", e)
+        await callback.answer("❌ Ошибка загрузки курса")
 
 @dp.message(F.text == "📝 Добавить курс")
 async def add_course_start(message: Message, state: FSMContext):
