@@ -724,70 +724,60 @@ async def show_single_task(callback: types.CallbackQuery):
         
         with db.cursor() as cursor:
             cursor.execute('''
-                SELECT 
-                    t.module_id, 
-                    t.title, 
-                    t.content,
-                    t.file_id,
-                    t.file_type,
-                    COALESCE(s.status, 'not_attempted')
+                SELECT t.module_id, t.title, t.content, 
+                       t.file_id, t.file_type, m.course_id
                 FROM tasks t
-                LEFT JOIN submissions s 
-                    ON s.task_id = t.task_id 
-                    AND s.user_id = %s
+                JOIN modules m ON t.module_id = m.module_id
                 WHERE t.task_id = %s
-            ''', (callback.from_user.id, task_id))
+            ''', (task_id,))
             tsk_data = cursor.fetchone()
 
         if not tsk_data:
             await callback.answer("❌ Задание не найдено")
             return
 
-        module_id, title, content, file_id, file_type, status = tsk_data
-        status_icon = "🟡" if status == "pending" else "✅" if status == "accepted" else "❌"
+        module_id, title, content, file_id, file_type, course_id = tsk_data
 
-        builder = InlineKeyboardBuilder()
+        # Создаем клавиатуры
+        inline_builder = InlineKeyboardBuilder()
+        inline_builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
+        inline_builder.button(text="📋 Список заданий", callback_data=f"list_tasks_{module_id}")
+        inline_builder.adjust(2)
         
-        # Добавляем кнопку возврата к списку заданий
-        builder.button(
-            text=f"📋 К списку заданий ({status_icon})", 
-            callback_data=f"list_tasks_{module_id}"
-        )
-        
-        builder.button(
-            text="✏️ Отправить решение", 
-            callback_data=f"submit_{task_id}"
-        )
-        builder.button(
-            text="🔄 История попыток", 
-            callback_data=f"attempts_{task_id}"
-        )
-        
-        builder.adjust(1, 2)  # Отдельная строка для списка, затем 2 в ряд
+        reply_builder = ReplyKeyboardBuilder()
+        reply_builder.button(text="📋 Назад к заданиям")
 
-        # Отправка контента задания
-        if file_id and file_type == 'photo':
-            await callback.message.edit_media(
-                InputMediaPhoto(
-                    media=file_id,
-                    caption=f"📌 {title}\n\n{content}"
-                ),
-                reply_markup=builder.as_markup()
-            )
-        elif file_id:
-            await callback.message.edit_caption(
-                caption=f"📌 {title}\n\n{content}",
-                reply_markup=builder.as_markup()
-            )
+        # Отправляем контент с кнопками
+        if file_id:
+            if file_type == 'photo':
+                await callback.message.edit_media(
+                    InputMediaPhoto(media=file_id, caption=f"📌 {title}\n\n{content}"),
+                    reply_markup=inline_builder.as_markup()
+                )
+            else:
+                await callback.message.edit_caption(
+                    caption=f"📌 {title}\n\n{content}",
+                    reply_markup=inline_builder.as_markup()
+                )
         else:
             await callback.message.edit_text(
                 f"📌 {title}\n\n{content}",
-                reply_markup=builder.as_markup()
+                reply_markup=inline_builder.as_markup()
             )
+
+        # Отправляем отдельно reply-клавиатуру
+        await callback.message.answer(
+            "Выберите действие:",
+            reply_markup=reply_builder.as_markup(
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+        )
 
     except Exception as e:
         logger.error(f"Ошибка показа задания: {str(e)}")
         await callback.answer("❌ Ошибка загрузки задания")
+
 
 async def get_file_id(message: Message) -> Optional[str]:
     if message.photo:
@@ -874,6 +864,7 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
         )
     
     return builder.as_markup()
+
 
 @dp.message(F.text == "🏠 В главное меню")
 async def main_menu(message: Message):
