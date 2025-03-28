@@ -719,6 +719,7 @@ async def main_menu(message: Message):
 async def handle_module_selection(message: types.Message, module_id: int):
     try:
         with db.cursor() as cursor:
+            # Получаем информацию о модуле и курсе
             cursor.execute('''
                 SELECT m.title, m.course_id, c.title 
                 FROM modules m
@@ -726,24 +727,49 @@ async def handle_module_selection(message: types.Message, module_id: int):
                 WHERE m.module_id = %s
             ''', (module_id,))
             module_data = cursor.fetchone()
+            
+            if not module_data:
+                await message.answer("❌ Модуль не найден")
+                return
 
-            cursor.execute('SELECT task_id, title FROM tasks WHERE module_id = %s', (module_id,))
+            module_title, course_id, course_title = module_data
+
+            # Получаем список заданий
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+            ''', (module_id,))
             tasks = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
-        for task_id, title in tasks:
-            builder.button(text=f"📝 {title}", callback_data=f"task_{task_id}")
         
-        builder.button(text="🔙 Назад к модулям курса", callback_data=f"course_{module_data[1]}")
-        builder.adjust(1)
-
-        await message.answer(
-            f"📚 Курс: {module_data[2]}\n📦 Модуль: {module_data[0]}\n\nВыберите задание:",
-            reply_markup=builder.as_markup()
-        )
-
+        if tasks:
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+            
+            # Кнопка возврата к модулям курса
+            builder.button(
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{course_id}"
+            )
+            builder.adjust(1)
+            
+            # Исправлено: заменено message.message.edit_text на message.answer
+            await message.answer(
+                f"📚 Курс: {course_title}\n"
+                f"📦 Модуль: {module_title}\n\n"
+                "Выберите задание:",
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await message.answer("ℹ️ В этом модуле пока нет заданий")
+        
     except Exception as e:
-        logger.error(f"Ошибка модуля: {str(e)}")
+        logger.error(f"Ошибка загрузки задания: {str(e)}")
         await message.answer("❌ Ошибка загрузки модуля")
 
 # Обработчик кнопки возврата к модулю
