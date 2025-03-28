@@ -504,9 +504,9 @@ async def module_selected(callback: types.CallbackQuery):
 
             module_title, course_id, course_title = module_data
 
-            # Получаем список заданий
+            # Исправленный запрос без description
             cursor.execute('''
-                SELECT task_id, title, description 
+                SELECT task_id, title 
                 FROM tasks 
                 WHERE module_id = %s 
                 ORDER BY task_order
@@ -516,14 +516,12 @@ async def module_selected(callback: types.CallbackQuery):
         builder = InlineKeyboardBuilder()
         
         if tasks:
-            # Добавляем задания
             for task in tasks:
                 builder.button(
-                    text=f"📝 {task[1]}", 
-                    callback_data=f"task_{task[0]}"
+                    text=f"📝 {task[1]}",  # task[1] = title
+                    callback_data=f"task_{task[0]}"  # task[0] = task_id
                 )
             
-            # Добавляем кнопку возврата
             builder.button(
                 text="🔙 К модулям курса", 
                 callback_data=f"course_{course_id}"
