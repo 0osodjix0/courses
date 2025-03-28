@@ -2,6 +2,7 @@ import os
 import logging
 import random
 import psycopg2
+from dotenv import load_dotenv
 from typing import Optional
 from psycopg2 import OperationalError, IntegrityError
 from aiogram.enums import ParseMode
