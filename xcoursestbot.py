@@ -1084,7 +1084,8 @@ async def handle_module_selection(callback: types.CallbackQuery, module_id: int)
         
 # Обработчик возврата к списку модулей курса
 @dp.callback_query(F.data.startswith("course_"))
-async def show_course_modules(callback: types.CallbackQuery):
+async def select_course(callback: types.CallbackQuery):
+    await callback.message.answer(...)
     try:
         course_id = int(callback.data.split("_")[1])
         
