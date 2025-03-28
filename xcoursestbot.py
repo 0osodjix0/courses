@@ -14,14 +14,17 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command, BaseFilter
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
 from aiogram import BaseMiddleware
 from datetime import datetime
 from aiogram.enums import ParseMode 
 from aiogram.types import (
-    Message, 
-    CallbackQuery, 
+    Message,
+    CallbackQuery,
+    InputMediaPhoto,
+    InputMediaDocument,
     ReplyKeyboardRemove,
-    InlineKeyboardMarkup  # Добавить эту строку
+    InlineKeyboardMarkup
 )
 from aiogram.utils.media_group import MediaGroupBuilder
 
@@ -748,26 +751,16 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
 
         module_id, title, content, file_id, file_type, course_id = tsk_data
         
-        # Сохраняем module_id в состоянии
+        # Сохраняем текущий модуль
         await state.update_data(current_module=module_id)
 
-        # Формируем клавиатуры
+        # Inline клавиатура для действий с заданием
         inline_builder = InlineKeyboardBuilder()
         inline_builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
         inline_builder.button(text="📋 Список заданий", callback_data=f"list_tasks_{module_id}")
         inline_builder.adjust(2)
-        
-        reply_builder = ReplyKeyboardBuilder()
-        reply_builder.button(text="📋 Назад к заданиям")
-        reply_markup = reply_builder.as_markup(
-            resize_keyboard=True,
-            one_time_keyboard=True
-        )
 
-        # Удаляем предыдущее сообщение
-        await callback.message.delete()
-
-        # Отправляем новое сообщение с контентом
+        # Отправка контента
         if file_id:
             if file_type == 'photo':
                 await callback.message.answer_photo(
@@ -787,36 +780,43 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
                 reply_markup=inline_builder.as_markup()
             )
 
-        # Отправляем reply-клавиатуру отдельным сообщением
+        # Отдельное сообщение с reply-клавиатурой
+        reply_kb = ReplyKeyboardBuilder()
+        reply_kb.button(text="📋 Назад к заданиям")
         await callback.message.answer(
             "Выберите действие:",
-            reply_markup=reply_markup
+            reply_markup=reply_kb.as_markup(
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
         )
+
+        # Удаляем исходное сообщение с заданиями
+        await callback.message.delete()
 
     except Exception as e:
         logger.error(f"Ошибка показа задания: {str(e)}")
         await callback.answer("❌ Ошибка загрузки задания")
 
-# Блок возврата к списку заданий
 @dp.message(F.text == "📋 Назад к заданиям")
 async def back_to_tasks(message: Message, state: FSMContext):
     try:
-        # Получаем сохраненный module_id
         data = await state.get_data()
         module_id = data.get('current_module')
         
         if not module_id:
-            raise ValueError("Не найден текущий модуль")
+            raise ValueError("Текущий модуль не определен")
 
-        # Формируем клавиатуру с заданиями
+        # Формируем клавиатуру заданий
         keyboard = await generate_tasks_keyboard(module_id)
         
-        # Удаляем предыдущие сообщения
+        # Удаляем предыдущую клавиатуру
         await message.answer(
             "Возвращаемся к списку заданий...",
             reply_markup=ReplyKeyboardRemove()
         )
         
+        # Отправляем обновленный список
         await message.answer(
             "📋 Список заданий модуля:",
             reply_markup=keyboard
@@ -825,6 +825,36 @@ async def back_to_tasks(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Ошибка возврата: {str(e)}")
         await message.answer("❌ Не удалось загрузить задания")
+
+async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    try:
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+                ORDER BY task_id
+            ''', (module_id,))
+            tasks = cursor.fetchall()
+
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+            
+            builder.button(
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{module_id}"
+            )
+            builder.adjust(1)
+            
+    except Exception as e:
+        logger.error(f"Ошибка формирования клавиатуры: {str(e)}")
+        builder.button(text="❌ Ошибка", callback_data="error")
+    
+    return builder.as_markup()
 
 @dp.message(F.text == "🏠 В главное меню")
 async def main_menu(message: Message):
