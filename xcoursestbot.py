@@ -566,14 +566,21 @@ async def show_courses(message: types.Message):
 @dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
     try:
-        course_id = int(callback.data.split("_")[1])
+        # Извлекаем часть данных после префикса
+        course_part = callback.data.split("_", 1)[1]
+        
+        # Проверяем, что данные содержат числовой ID
+        if not course_part.isdigit():
+            raise ValueError("Некорректный ID курса")
+            
+        course_id = int(course_part)
         user_id = callback.from_user.id
         
         with db.cursor() as cursor:
             # Обновляем текущий курс пользователя
             cursor.execute(
-                "UPDATE users SET current_course = %s WHERE user_id = %s",  # Исправлено здесь
-                (course_id, user_id)  # Добавлена закрывающая скобка
+                "UPDATE users SET current_course = %s WHERE user_id = %s",
+                (course_id, user_id)
             )
             
             # Получаем данные курса
@@ -582,7 +589,11 @@ async def select_course(callback: types.CallbackQuery):
                 (course_id,)
             )
             course = cursor.fetchone()
-        
+            
+            if not course:
+                await callback.answer("❌ Курс не найден")
+                return
+
         text = f"✅ Вы выбрали курс: {course[0]}\nВыберите модуль:"
         kb = modules_kb(course_id)
         
@@ -596,6 +607,9 @@ async def select_course(callback: types.CallbackQuery):
         else:
             await callback.message.edit_text(text, reply_markup=kb)
             
+    except ValueError as e:
+        logger.error(f"Ошибка формата ID курса: {e}")
+        await callback.answer("❌ Некорректный идентификатор курса")
     except Exception as e:
         logger.error(f"Ошибка выбора курса: {e}")
         await callback.answer("❌ Ошибка при выборе курса")
