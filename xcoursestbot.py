@@ -897,22 +897,22 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 
 # Универсальный обработчик ошибок
 @dp.errors()
-async def global_error_handler(event: types.TelegramObject, exception: Exception) -> bool:
+async def global_error_handler(update: types.Update, exception: Exception, bot: Bot) -> bool:
     """Глобальный обработчик всех исключений"""
     logger.critical("Critical error: %s", exception, exc_info=True)
     
     try:
         # Уведомление пользователя
-        if isinstance(event, types.CallbackQuery):
-            await event.answer("⚠️ Произошла ошибка", show_alert=True)
-        elif isinstance(event, types.Message):
-            await event.answer("🚨 Системная ошибка. Попробуйте позже.")
+        if update.callback_query:
+            await update.callback_query.answer("⚠️ Произошла ошибка", show_alert=True)
+        elif update.message:
+            await update.message.answer("🚨 Системная ошибка. Попробуйте позже.")
         
         # Отправка уведомления админу
         await bot.send_message(
-            int(os.getenv('ADMIN_ID')),  # Явное преобразование в int
-            f"🔥 Critical Error:\n\n{exception}\n\n"
-            f"Update: {event.update.model_dump_json() if event.update else 'No update data'}"
+            ADMIN_ID,
+            f"🔥 Critical Error:\n{exception}\n\n"
+            f"Update: {update.model_dump_json()}"
         )
     except Exception as e:
         logger.error("Error handling error: %s", e)
@@ -1267,46 +1267,72 @@ async def cancel_solution(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
     try:
-        data_parts = callback.data.split('_')
-        if len(data_parts) != 3:
-            raise ValueError("Некорректный формат данных")
+        # Проверка и парсинг данных
+        data = callback.data.split('_')
+        if len(data) != 3:
+            raise ValueError(f"Invalid callback data: {callback.data}")
             
-        action, submission_id_str, user_id_str = data_parts
+        action, submission_id_str, user_id_str = data
+        
+        # Валидация ID
         submission_id = int(submission_id_str)
-        student_user_id = int(user_id_str)  # Переименовали для ясности
+        student_id = int(user_id_str)
+        
+        # Определение статуса
+        new_status = "accepted" if action == "accept" else "rejected"
+        status_emoji = "✅" if action == "accept" else "❌"
 
         with db.cursor() as cursor:
+            # Обновление статуса и получение task_id
             cursor.execute('''
                 UPDATE submissions 
                 SET status = %s 
                 WHERE submission_id = %s
                 RETURNING task_id
-            ''', ("accepted" if action == "accept" else "rejected", submission_id))
+            ''', (new_status, submission_id))
             
-            task_id = cursor.fetchone()[0]
+            result = cursor.fetchone()
+            if not result:
+                await callback.answer("❌ Решение не найдено")
+                return
+                
+            task_id = result[0]
+
+            # Получение названия задания
+            cursor.execute('''
+                SELECT title 
+                FROM tasks 
+                WHERE task_id = %s
+            ''', (task_id,))
             
-            cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
             task_title = cursor.fetchone()[0]
             db.conn.commit()
 
-        status_text = "принято ✅" if action == "accept" else "отклонено ❌"
-        await bot.send_message(
-            student_user_id,  # Используем ID из callback_data
-            f"📢 Ваше решение по заданию \"{task_title}\" {status_text}."
-        )
+        # Уведомление студента
+        try:
+            await bot.send_message(
+                chat_id=student_id,
+                text=f"📢 Ваше решение по заданию «{task_title}» {status_emoji}\nСтатус: {new_status.capitalize()}"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось уведомить студента {student_id}: {str(e)}")
 
-        await callback.answer("✅ Статус обновлен!")
+        # Удаление сообщения с кнопками
         await callback.message.delete()
+        await callback.answer(f"Статус обновлен {status_emoji}")
 
     except (ValueError, IndexError) as e:
-        logger.error(f"Ошибка данных: {e}")
-        await callback.answer("❌ Ошибка формата данных")
+        logger.error(f"Ошибка данных: {str(e)} | Data: {callback.data}")
+        await callback.answer("❌ Ошибка обработки запроса", show_alert=True)
+        
     except psycopg2.Error as e:
-        logger.error(f"Ошибка БД: {e}")
-        await callback.answer("❌ Ошибка базы данных")
+        logger.error(f"Ошибка БД: {str(e)}")
+        await callback.answer("⚠️ Ошибка базы данных", show_alert=True)
+        db.conn.rollback()
+        
     except Exception as e:
-        logger.error(f"Общая ошибка: {e}", exc_info=True)
-        await callback.answer("⚠️ Произошла ошибка")
+        logger.error(f"Критическая ошибка: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Системная ошибка", show_alert=True)
         
 def main_menu() -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
@@ -1848,6 +1874,13 @@ async def cancel_handler(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Админ-меню:", reply_markup=admin_menu())
     else:
         await callback.message.answer("Главное меню:", reply_markup=main_menu())
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def handle_reject(callback: types.CallbackQuery):
+    try:
+        # Аналогичная валидация данных
+    except ValueError as e:
+        # Обработка ошибок
 
 @dp.message(F.text == "🔙 В главное меню")
 async def back_to_main(message: Message):
