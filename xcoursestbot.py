@@ -546,7 +546,6 @@ async def task_selected_handler(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         
         with db.cursor() as cursor:
-            # Получаем данные задания и статус решения
             cursor.execute('''
                 SELECT 
                     t.title, 
@@ -571,7 +570,6 @@ async def task_selected_handler(callback: types.CallbackQuery):
 
         title, content, file_id, file_type, status, score = task_data
         
-        # Формируем текст сообщения
         text = f"📝 <b>{title}</b>\n\n{content}"
         status_map = {
             'pending': "⏳ На проверке",
@@ -585,37 +583,45 @@ async def task_selected_handler(callback: types.CallbackQuery):
             if score is not None:
                 text += f"\nОценка: {score}/100"
 
-        # Отправка медиа контента
+        # Создаем клавиатуру перед отправкой сообщения
+        keyboard = task_keyboard(task_id)
+
         try:
             if file_id and file_type:
+                # Отправляем новое сообщение с медиа и клавиатурой
                 if file_type == 'photo':
                     await callback.message.answer_photo(
-                        file_id, 
+                        file_id,
                         caption=text,
+                        reply_markup=keyboard,
                         parse_mode=ParseMode.HTML
                     )
                 else:
                     await callback.message.answer_document(
                         file_id,
                         caption=text,
+                        reply_markup=keyboard,
                         parse_mode=ParseMode.HTML
                     )
             else:
+                # Отправляем текстовое сообщение с клавиатурой
                 await callback.message.answer(
-                    text, 
+                    text,
+                    reply_markup=keyboard,
                     parse_mode=ParseMode.HTML
                 )
+            
+            # Удаляем исходное сообщение с кнопкой задания
+            await callback.message.delete()
+
         except Exception as e:
             logger.error(f"Ошибка отправки медиа: {e}")
             await callback.message.answer(
                 "⚠️ Не удалось загрузить вложение задания",
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
             )
 
-        # Обновление клавиатуры
-        await callback.message.edit_reply_markup(
-            reply_markup=task_keyboard(task_id)
-        )
         await callback.answer()
 
     except Exception as e:
