@@ -1195,7 +1195,7 @@ async def notify_admin(submission_id: int):
             
             data = cursor.fetchone()
             if not data:
-                logger.error(«Решение не найдено»)
+                logger.error("Решение не найдено")
                 return
 
             file_id, file_type, content, full_name, title, student_id = data
