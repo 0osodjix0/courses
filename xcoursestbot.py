@@ -35,6 +35,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+dp = Dispatcher(storage=storage)  
+
 # Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
