@@ -1010,28 +1010,10 @@ async def back_to_module_handler(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("module_"))
 async def handle_module_selection(callback: types.CallbackQuery):
     try:
+        # Извлекаем ID модуля из callback данных
         module_id = int(callback.data.split('_')[1])
         
-        with db.cursor() as cursor:
-            cursor.execute('''
-                SELECT m.title, m.course_id, c.title 
-                FROM modules m
-                JOIN courses c ON m.course_id = c.course_id
-                WHERE m.module_id = %s
-            ''', (module_id,))
-            module_data = cursor.fetchone()
-            
-            if not module_data:
-                await callback.answer("❌ Модуль не найден")
-                return
-
-# Основная функция обработки модуля
-async def handle_module_selection(callback: types.CallbackQuery):
-    try:
-        # Извлекаем module_id из callback данных
-        module_id = int(callback.data.split('_')[1])
-        
-        # Используем асинхронный контекстный менеджер
+        # Асинхронное подключение к базе данных
         async with db.cursor() as cursor:
             # Получаем информацию о модуле
             await cursor.execute('''
@@ -1040,37 +1022,42 @@ async def handle_module_selection(callback: types.CallbackQuery):
                 JOIN courses c ON m.course_id = c.course_id
                 WHERE m.module_id = %s
             ''', (module_id,))
+            
             module_data = await cursor.fetchone()
 
             if not module_data:
                 await callback.answer("❌ Модуль не найден")
                 return
 
+            # Распаковываем данные
             module_title, course_id, course_title = module_data
 
-            # Получаем список заданий
+            # Получаем задания модуля
             await cursor.execute(
                 "SELECT task_id, title FROM tasks WHERE module_id = %s",
                 (module_id,)
             )
             tasks = await cursor.fetchall()
 
-        # Строим клавиатуру
+        # Строим интерактивную клавиатуру
         builder = InlineKeyboardBuilder()
         
         if tasks:
+            # Добавляем кнопки для каждого задания
             for task_id, title in tasks:
                 builder.button(
                     text=f"📝 {title}",
                     callback_data=f"task_{task_id}"
                 )
             
+            # Кнопка возврата к списку модулей
             builder.button(
                 text="🔙 К модулям курса", 
                 callback_data=f"course_{course_id}"
             )
             builder.adjust(1)
             
+            # Редактируем сообщение с новой клавиатурой
             await callback.message.edit_text(
                 f"📚 Курс: {course_title}\n"
                 f"📦 Модуль: {module_title}\n\n"
@@ -1081,11 +1068,17 @@ async def handle_module_selection(callback: types.CallbackQuery):
             await callback.answer("ℹ️ В этом модуле пока нет заданий")
 
     except (IndexError, ValueError) as e:
+        # Обработка ошибок формата данных
         logger.error(f"Ошибка формата данных: {e}")
         await callback.answer("❌ Некорректный идентификатор модуля")
     except Exception as e:
+        # Общая обработка ошибок
         logger.error(f"Ошибка обработки модуля: {e}")
         await callback.answer("❌ Ошибка загрузки модуля")
+        await callback.message.answer(
+            "⚠️ Произошла ошибка. Попробуйте позже.",
+            reply_markup=main_menu()
+        )
         
         # Обработчик списка всех курсов
 @dp.callback_query(F.data == "all_courses")
