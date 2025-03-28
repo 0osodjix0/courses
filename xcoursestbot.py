@@ -483,8 +483,9 @@ async def task_selected_handler(callback: types.CallbackQuery):
         logger.error(f"Ошибка показа задания: {str(e)}")
         await callback.answer("❌ Ошибка загрузки задания")
 
+# Обработчик выбора модуля
 @dp.callback_query(F.data.startswith("module_"))
-async def module_selected(callback: types.CallbackQuery):
+async def handle_module_selection(callback: types.CallbackQuery):
     try:
         module_id = int(callback.data.split("_")[1])
         
@@ -504,24 +505,24 @@ async def module_selected(callback: types.CallbackQuery):
 
             module_title, course_id, course_title = module_data
 
-            # Исправленный запрос без description
+            # Получаем список заданий
             cursor.execute('''
                 SELECT task_id, title 
                 FROM tasks 
-                WHERE module_id = %s 
-                ORDER BY task_order
+                WHERE module_id = %s
             ''', (module_id,))
             tasks = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
         
         if tasks:
-            for task in tasks:
+            for task_id, title in tasks:
                 builder.button(
-                    text=f"📝 {task[1]}",  # task[1] = title
-                    callback_data=f"task_{task[0]}"  # task[0] = task_id
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
                 )
             
+            # Кнопка возврата к модулям курса
             builder.button(
                 text="🔙 К модулям курса", 
                 callback_data=f"course_{course_id}"
@@ -529,7 +530,7 @@ async def module_selected(callback: types.CallbackQuery):
             builder.adjust(1)
             
             await callback.message.edit_text(
-                f"📂 Курс: {course_title}\n"
+                f"📚 Курс: {course_title}\n"
                 f"📦 Модуль: {module_title}\n\n"
                 "Выберите задание:",
                 reply_markup=builder.as_markup()
@@ -541,14 +542,14 @@ async def module_selected(callback: types.CallbackQuery):
         logger.error(f"Ошибка загрузки модуля: {e}")
         await callback.answer("❌ Ошибка загрузки модуля")
 
-# Новый обработчик для возврата к списку модулей курса
+# Обработчик возврата к списку модулей курса
 @dp.callback_query(F.data.startswith("course_"))
 async def show_course_modules(callback: types.CallbackQuery):
     try:
         course_id = int(callback.data.split("_")[1])
         
         with db.cursor() as cursor:
-            # Получаем информацию о курсе
+            # Информация о курсе
             cursor.execute(
                 "SELECT title FROM courses WHERE course_id = %s",
                 (course_id,)
@@ -559,19 +560,19 @@ async def show_course_modules(callback: types.CallbackQuery):
             cursor.execute('''
                 SELECT module_id, title 
                 FROM modules 
-                WHERE course_id = %s 
-                ORDER BY module_order
+                WHERE course_id = %s
             ''', (course_id,))
             modules = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
         
-        for module in modules:
+        for module_id, title in modules:
             builder.button(
-                text=f"📦 {module[1]}", 
-                callback_data=f"module_{module[0]}"
+                text=f"📦 {title}", 
+                callback_data=f"module_{module_id}"
             )
         
+        # Кнопка возврата к списку курсов
         builder.button(
             text="🔙 К списку курсов", 
             callback_data="all_courses"
@@ -587,68 +588,33 @@ async def show_course_modules(callback: types.CallbackQuery):
         logger.error(f"Ошибка загрузки курса: {e}")
         await callback.answer("❌ Ошибка загрузки курса")
 
-class TaskStates(StatesGroup):
-    waiting_for_solution = State()
-
-@dp.callback_query(F.data.startswith("back_to_module_"))
-async def back_to_module(callback: CallbackQuery):
-    task_id = int(callback.data.split("_")[-1])
-    
-    with db.cursor() as cursor:
-        cursor.execute('''
-            SELECT m.module_id 
-            FROM tasks t
-            JOIN modules m ON t.module_id = m.module_id
-            WHERE t.task_id = %s
-        ''', (task_id,))
-        result = cursor.fetchone()
-        if not result:
-            await callback.answer("❌ Модуль не найден")
-            return
-        module_id = result[0]
-    
-    await module_selected(callback, module_id)
-    
-async def module_selected(callback: CallbackQuery, module_id: int):
+# Обработчик списка всех курсов
+@dp.callback_query(F.data == "all_courses")
+async def show_all_courses(callback: types.CallbackQuery):
     try:
         with db.cursor() as cursor:
-            cursor.execute(
-                "SELECT course_id, title FROM modules WHERE module_id = %s",
-                (module_id,)
-            )
-            module_data = cursor.fetchone()
-            
-            cursor.execute(
-                "SELECT task_id, title FROM tasks WHERE module_id = %s",
-                (module_id,)
-            )
-            tasks = cursor.fetchall()
+            cursor.execute("SELECT course_id, title FROM courses")
+            courses = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
-        
-        if tasks:
-            for task in tasks:
-                builder.button(
-                    text=f"📝 {task[1]}", 
-                    callback_data=f"task_{task[0]}"
-                )
+        for course_id, title in courses:
             builder.button(
-                text="🔙 Назад к курсу", 
-                callback_data=f"back_to_course_{module_data[0]}"
+                text=f"📚 {title}", 
+                callback_data=f"course_{course_id}"
             )
-            builder.adjust(1)
-            
-            await callback.message.edit_text(
-                f"📂 Модуль: {module_data[1]}\nВыберите задание:",
-                reply_markup=builder.as_markup()
-            )
-        else:
-            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+        
+        builder.adjust(1)
+        await callback.message.edit_text(
+            "📚 Список доступных курсов:",
+            reply_markup=builder.as_markup()
+        )
 
     except Exception as e:
-        logger.error(f"Ошибка загрузки модуля: {e}")
-        await callback.answer("❌ Ошибка загрузки модуля")
+        logger.error(f"Ошибка загрузки курсов: {e}")
+        await callback.answer("❌ Ошибка загрузки списка курсов")
 
+class TaskStates(StatesGroup):
+    waiting_for_solution = State()
 
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
