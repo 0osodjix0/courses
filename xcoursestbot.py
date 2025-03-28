@@ -600,7 +600,7 @@ async def show_courses(message: types.Message):
         text += f"🎯 Текущий курс: {current_course[0]}\n\n"
     text += "👇 Выберите курс:"
     
-    await message.answer(text, reply_markup=courses_kb())c
+    await message.answer(text, reply_markup=courses_kb())
 
 # Обработчик выбора курса@dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
