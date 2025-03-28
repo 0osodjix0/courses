@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import Optional
 from psycopg2 import OperationalError, IntegrityError
 from aiogram.enums import ParseMode
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
@@ -368,18 +368,22 @@ async def back_to_main_menu(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("submit_"))
-async def handle_submit_solution(callback: CallbackQuery, state: FSMContext):
+async def handle_submit_solution(callback: types.CallbackQuery, state: FSMContext):
     try:
         task_id = int(callback.data.split("_")[1])
         await state.set_state(TaskStates.waiting_for_solution)
         await state.update_data(task_id=task_id)
         
-        # Показываем клавиатуру под строкой ввода
-        reply_markup = ReplyKeyboardBuilder()
-        reply_markup.button(text="❌ Отмена")
+        # Создаем Reply-клавиатуру
+        builder = ReplyKeyboardBuilder()
+        builder.button(text="❌ Отмена")
+        
         await callback.message.answer(
             "📤 Отправьте ваше решение (текст или файл):",
-            reply_markup=reply_markup.as_markup(resize_keyboard=True)
+            reply_markup=builder.as_markup(
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
         )
         await callback.answer()
 
