@@ -295,11 +295,10 @@ async def handle_module_selection(callback: types.CallbackQuery, module_id: int)
 
             module_title, course_id, course_title = module_data
 
-            cursor.execute('''
-                SELECT task_id, title 
-                FROM tasks 
-                WHERE module_id = %s
-            ''', (module_id,))
+            cursor.execute(
+                "SELECT task_id, title FROM tasks WHERE module_id = %s",
+                (module_id,)
+            )
             tasks = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
@@ -702,7 +701,7 @@ async def back_to_module_handler(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("module_"))
 async def handle_module_selection_wrapper(callback: types.CallbackQuery):
     module_id = int(callback.data.split("_")[1])
-    await handle_module_selection(callback, module_id)
+    await handle_module_selection(callback, module_id)  
     
 async def handle_module_selection(callback: types.CallbackQuery):
     try:
