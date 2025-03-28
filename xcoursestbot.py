@@ -1198,8 +1198,9 @@ def admin_menu() -> types.ReplyKeyboardMarkup:
     )
 
 # 3. Обработчик кнопки "Назад" в админ-меню
-@dp.message(F.text == "🔙 Назад")
-async def admin_back_handler(message: Message, state: FSMContext):
+@dp.message(F.text == "Назад")
+async def back_handler(message: types.Message):
+    await message.delete()
     if str(message.from_user.id) != ADMIN_ID:
         return
     
