@@ -895,12 +895,17 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 
 # Универсальный обработчик ошибок
 @dp.errors()
-async def errors_handler(update: types.Update, exception: Exception):
+async def errors_handler(
+    event: types.TelegramObject, 
+    exception: Exception
+) -> bool:
     logger.error(f"Глобальная ошибка: {str(exception)}")
-    if update.message:
-        await update.message.answer("⚠️ Произошла системная ошибка")
-    elif update.callback_query:
-        await update.callback_query.answer("❌ Ошибка выполнения", show_alert=True)
+    
+    if isinstance(event, types.Message):
+        await event.answer("⚠️ Произошла системная ошибка")
+    elif isinstance(event, types.CallbackQuery):
+        await event.answer("❌ Ошибка выполнения", show_alert=True)
+    
     return True
 
 async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
