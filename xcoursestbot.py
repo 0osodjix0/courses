@@ -167,6 +167,10 @@ class AdminForm(StatesGroup):
     add_task_media = State()
     delete_course = State()
 
+class TaskStates(StatesGroup):
+    waiting_for_solution = State()
+    waiting_for_retry = State()
+    
 def main_menu() -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     # Для Reply-кнопок указываем только текст
