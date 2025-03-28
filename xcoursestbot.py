@@ -701,49 +701,51 @@ async def select_course(callback: types.CallbackQuery):
         )
 
 # Клавиатура модулей курса
-def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
+async def modules_keyboard(course_id: int) -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    
     try:
         with db.cursor() as cursor:
+            # Получаем список модулей для курса
             cursor.execute(
-                "SELECT module_id, title FROM modules WHERE course_id = %s",
-                (course_id,))
-            modules = cursor.fetchall()
-        
-        builder = InlineKeyboardBuilder()
-        
-        if modules:
-            for module_id, title in modules:
-                builder.button(
-                    text=f"📂 {title}",
-                    callback_data=f"module_{module_id}"
-                )
-        else:
-            builder.button(
-                text="❌ Нет доступных модулей", 
-                callback_data="no_modules"
+                "SELECT module_id, title FROM modules WHERE course_id = %s ORDER BY module_id",
+                (course_id,)
             )
-            
+            modules = cursor.fetchall()
+
+            if modules:
+                for module_id, title in modules:
+                    builder.button(
+                        text=f"📦 {title}",
+                        callback_data=f"module_{module_id}"
+                    )
+            else:
+                builder.button(
+                    text="❌ Нет доступных модулей",
+                    callback_data="no_modules_placeholder"
+                )
+
+    except OperationalError as e:
+        logger.error(f"Database error: {str(e)}")
         builder.button(
-            text="🔙 Назад к курсам", 
+            text="⚠️ Ошибка загрузки модулей",
+            callback_data="module_load_error"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        builder.button(
+            text="⚠️ Системная ошибка",
+            callback_data="system_error"
+        )
+    finally:
+        # Всегда добавляем кнопку возврата
+        builder.button(
+            text="🔙 К списку курсов",
             callback_data="all_courses"
         )
-        builder.adjust(1)
-        
-        return builder.as_markup()
-        
-    except Exception as e:
-        logger.error(f"Ошибка формирования клавиатуры: {e}")
-        return InlineKeyboardBuilder().as_markup()
-        
-        reply_kb = ReplyKeyboardBuilder()
-        reply_kb.button(text="🏠 В главное меню")
-        await callback.message.answer(
-            "Выберите действие:",
-            reply_markup=reply_kb.as_markup(
-                resize_keyboard=True,
-                one_time_keyboard=True
-            )
-        )
+
+    builder.adjust(1)
+    return builder.as_markup()
 
 # Блок показа конкретного задания
 @dp.callback_query(F.data.startswith("task_"))
