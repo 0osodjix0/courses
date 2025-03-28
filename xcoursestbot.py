@@ -476,19 +476,20 @@ async def select_course(callback: types.CallbackQuery):
         with db.cursor() as cursor:
             # Обновляем текущий курс пользователя
             cursor.execute(
-                "UPDATE users SET current_course = %s WHERE user_id = %s",
-                (course_id, user_id)
+                "UPDATE users SET current_course = %s WHERE user_id = %s",  # Исправлено здесь
+                (course_id, user_id)  # Добавлена закрывающая скобка
+            )
             
             # Получаем данные курса
             cursor.execute(
                 "SELECT title, media_id FROM courses WHERE course_id = %s",
-                (course_id,))
+                (course_id,)
+            )
             course = cursor.fetchone()
         
         text = f"✅ Вы выбрали курс: {course[0]}\nВыберите модуль:"
         kb = modules_kb(course_id)
         
-        # Отправка медиа с клавиатурой
         if course[1]:
             await callback.message.delete()
             await callback.message.answer_photo(
@@ -502,7 +503,7 @@ async def select_course(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка выбора курса: {e}")
         await callback.answer("❌ Ошибка при выборе курса")
-
+        
 # Клавиатура модулей курса
 def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
     try:
