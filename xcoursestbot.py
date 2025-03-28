@@ -747,7 +747,6 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
         # Inline клавиатура для действий с заданием
         inline_builder = InlineKeyboardBuilder()
         inline_builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
-        inline_builder.button(text="📋 Список заданий", callback_data=f"list_tasks_{module_id}")
         inline_builder.adjust(2)
 
         # Удаляем предыдущее сообщение
