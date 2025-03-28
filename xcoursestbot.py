@@ -397,28 +397,30 @@ async def process_solution(message: types.Message, state: FSMContext):
         data = await state.get_data()
         task_id = data['task_id']
         user_id = message.from_user.id
-        
+        file_id = await get_file_id(message)
+        content = message.text if message.text else None
+
         with db.cursor() as cursor:
+            # Исправленный SQL-запрос
             cursor.execute('''
-                INSERT INTO submissions (...) 
-                VALUES (...)
+                INSERT INTO submissions 
+                (user_id, task_id, content, file_id, status, submitted_at) 
+                VALUES (%s, %s, %s, %s, 'pending', NOW())
                 RETURNING submission_id
-            ''', (...))
-            submission_id = cursor.fetchone()[0]
+            ''', (user_id, task_id, content, file_id))
             
-            # Исправленный вызов без .message
             cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
             module_id = cursor.fetchone()[0]
-        
-        # Используем message напрямую
+            db.conn.commit()
+
         await handle_module_selection(message, module_id)
-        await message.answer("✅ Решение отправлено на проверку!", reply_markup=ReplyKeyboardRemove())
+        await message.answer("✅ Решение отправлено!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
 
     except Exception as e:
         logger.error(f"Solution error: {str(e)}")
         await message.answer("❌ Ошибка сохранения решения", reply_markup=ReplyKeyboardRemove())
-
+        
 async def handle_module_selection(message: Message, module_id: int):
     with db.cursor() as cursor:
         cursor.execute('''
