@@ -600,7 +600,7 @@ async def show_courses(message: types.Message):
         text += f"🎯 Текущий курс: {current_course[0]}\n\n"
     text += "👇 Выберите курс:"
     
-    await message.answer(text, reply_markup=courses_kb())
+    await message.answer(text, reply_markup=courses_kb())c
 
 # Обработчик выбора курса@dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
@@ -690,7 +690,16 @@ async def select_course(callback: types.CallbackQuery):
             ADMIN_ID,
             f"🚨 Course selection error:\n{str(e)[:300]}"
         )
-        
+        reply_kb = ReplyKeyboardBuilder()
+        reply_kb.button(text="🏠 В главное меню")
+        await callback.message.answer(
+            "Выберите действие:",
+            reply_markup=reply_kb.as_markup(
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+        )
+
 # Клавиатура модулей курса
 def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
     try:
@@ -725,6 +734,16 @@ def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
     except Exception as e:
         logger.error(f"Ошибка формирования клавиатуры: {e}")
         return InlineKeyboardBuilder().as_markup()
+        
+        reply_kb = ReplyKeyboardBuilder()
+        reply_kb.button(text="🏠 В главное меню")
+        await callback.message.answer(
+            "Выберите действие:",
+            reply_markup=reply_kb.as_markup(
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+        )
 
 # Блок показа конкретного задания
 @dp.callback_query(F.data.startswith("task_"))
@@ -913,13 +932,14 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 @dp.message(F.text == "🏠 В главное меню")
-async def main_menu(message: Message):
+async def handle_main_menu(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(
         "Главное меню:",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu(),
         parse_mode=ParseMode.HTML
     )
-
+    
 # Унифицированный обработчик модулей
 async def handle_module_selection(message: types.Message, module_id: int):
     try:
@@ -1187,18 +1207,21 @@ async def process_solution(message: Message, state: FSMContext):
         return
 
     try:
-        file_ids = []
+        file_id = None
+        file_type = None
         content = None
         
         # Обработка контента
         if message.content_type == 'text':
-            content = message.html_text
+            content = message.text
         elif message.photo:
-            file_ids = [f"photo:{message.photo[-1].file_id}"]
+            file_id = message.photo[-1].file_id
+            file_type = "photo"
         elif message.document:
-            file_ids = [f"doc:{message.document.file_id}"]
+            file_id = message.document.file_id
+            file_type = "document"
 
-        if not content and not file_ids:
+        if not content and not file_id:
             await message.answer("❌ Решение должно содержать текст или файл")
             return
 
@@ -1206,28 +1229,29 @@ async def process_solution(message: Message, state: FSMContext):
             # Вставляем новое решение
             cursor.execute('''
                 INSERT INTO submissions 
-                (user_id, task_id, content, file_id, status, submitted_at) 
-                VALUES (%s, %s, %s, %s, 'pending', NOW())
+                (user_id, task_id, content, file_id, file_type, status, submitted_at) 
+                VALUES (%s, %s, %s, %s, %s, 'pending', NOW())
                 RETURNING submission_id
             ''', (
                 user_id,
                 task_id,
                 content,
-                ",".join(file_ids) if file_ids else None
+                file_id,
+                file_type
             ))
             
             submission_id = cursor.fetchone()[0]
             db.conn.commit()
 
         await message.answer("✅ Решение отправлено на проверку!")
-        await notify_admin(submission_id)  # Исправленный вызов
+        await notify_admin(submission_id)
 
     except psycopg2.Error as e:
-        logger.error(f"Database error: {str(e)}")
-        await message.answer("❌ Ошибка базы данных")
+        logger.error(f"Ошибка базы данных: {str(e)}")
+        await message.answer("❌ Ошибка сохранения решения")
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        await message.answer("⚠️ Произошла ошибка")
+        logger.error(f"Неизвестная ошибка: {str(e)}")
+        await message.answer("⚠️ Произошла ошибка при отправке")
     finally:
         await state.clear()
 
@@ -1257,19 +1281,19 @@ async def notify_admin(submission_id: int):
     try:
         with db.cursor() as cursor:
             cursor.execute('''
-                SELECT s.content, s.file_id, u.full_name, t.title, s.user_id
+                SELECT s.content, s.file_id, s.file_type, u.full_name, t.title, s.user_id
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
                 WHERE s.submission_id = %s
             ''', (submission_id,))
             
-            submission_data = cursor.fetchone()
-            if not submission_data:
+            data = cursor.fetchone()
+            if not data:
                 logger.error("Данные решения не найдены")
                 return
 
-            content, file_id, full_name, title, student_user_id = submission_data
+            content, file_id, file_type, full_name, title, student_user_id = data
 
             text = (
                 f"📬 Новое решение (#{submission_id})\n"
@@ -1284,22 +1308,19 @@ async def notify_admin(submission_id: int):
             admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_user_id}")
             admin_kb.adjust(2, 1)
 
-            # Если есть файл
-            if file_id:
+            if file_id and file_type:
                 try:
-                    # Разделяем тип и ID файла
-                    file_type, fid = file_id.split(":", 1)
                     if file_type == "photo":
                         await bot.send_photo(
                             ADMIN_ID,
-                            photo=fid,
+                            photo=file_id,
                             caption=text,
                             reply_markup=admin_kb.as_markup()
                         )
-                    elif file_type == "doc":
+                    elif file_type == "document":
                         await bot.send_document(
                             ADMIN_ID,
-                            document=fid,
+                            document=file_id,
                             caption=text,
                             reply_markup=admin_kb.as_markup()
                         )
@@ -1320,7 +1341,19 @@ async def notify_admin(submission_id: int):
     except Exception as e:
         logger.error(f"Ошибка уведомления: {str(e)}")
         await bot.send_message(ADMIN_ID, f"⚠️ Ошибка обработки решения #{submission_id}")
-        
+
+@dp.message(TaskStates.waiting_for_solution, F.text.in_(["❌ Отмена", "🔙 Назад"]))
+async def cancel_solution(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "❌ Отправка решения отменена",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await message.answer(
+        "Главное меню:",
+        reply_markup=main_menu()
+    )
+
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
     try:
