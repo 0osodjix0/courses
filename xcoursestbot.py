@@ -432,23 +432,28 @@ async def process_solution(message: types.Message, state: FSMContext):
         await message.answer("❌ Не удалось сохранить решение", reply_markup=ReplyKeyboardRemove())
 
 async def show_module_after_submission(message: types.Message, module_id: int):
-    """Новая функция для навигации после отправки решения"""
+    """Функция для показа модуля после отправки решения"""
     with db.cursor() as cursor:
         cursor.execute('''
-            SELECT m.title, c.title 
+            SELECT m.title, c.course_id, c.title 
             FROM modules m
             JOIN courses c ON m.course_id = c.course_id
             WHERE m.module_id = %s
         ''', (module_id,))
         module_data = cursor.fetchone()
-        
+
         cursor.execute('SELECT task_id, title FROM tasks WHERE module_id = %s', (module_id,))
         tasks = cursor.fetchall()
+
+    if not module_data:
+        await message.answer("❌ Ошибка: Модуль не найден")
+        return
 
     builder = InlineKeyboardBuilder()
     for task in tasks:
         builder.button(text=f"📝 {task[1]}", callback_data=f"task_{task[0]}")
     
+    # Теперь передаем course_id, а не название курса
     builder.button(text="🔙 Назад к курсу", callback_data=f"course_{module_data[1]}")
     builder.adjust(1)
 
