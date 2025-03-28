@@ -754,13 +754,13 @@ async def send_media_with_caption(file_type: str, file_id: str, caption: str, ke
     except Exception as e:
         logger.error(f"Error sending media: {e}")
 
-async def notify_admin(submission_id: int, user_id: int):
+async def notify_admin(submission_id: int):  # Убрали user_id из параметров
     """Уведомление администратора о новом решении"""
     try:
         with db.cursor() as cursor:
-            # Получаем полные данные о решении
+            # Добавили s.user_id в запрос
             cursor.execute('''
-                SELECT s.content, s.file_id, u.full_name, t.title, s.task_id
+                SELECT s.content, s.file_id, u.full_name, t.title, s.task_id, s.user_id
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
@@ -771,6 +771,8 @@ async def notify_admin(submission_id: int, user_id: int):
             if not submission_data:
                 return
 
+            student_user_id = submission_data[5]  # Получаем user_id студента
+
             # Формируем текст сообщения
             text = (
                 f"📬 Новое решение (#{submission_id})\n"
@@ -779,23 +781,36 @@ async def notify_admin(submission_id: int, user_id: int):
                 f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             )
 
-            # Создаем клавиатуру с submission_id вместо task_id
+            # Используем student_user_id из базы
             admin_kb = InlineKeyboardBuilder()
             admin_kb.button(
                 text="✅ Принять", 
-                callback_data=f"accept_{submission_id}_{user_id}"  # Исправлено здесь
+                callback_data=f"accept_{submission_id}_{student_user_id}"
             )
             admin_kb.button(
                 text="❌ Требует правок", 
-                callback_data=f"reject_{submission_id}_{user_id}"  # Исправлено здесь
+                callback_data=f"reject_{submission_id}_{student_user_id}"
             )
             admin_kb.button(
                 text="📨 Написать студенту", 
-                url=f"tg://user?id={user_id}"
+                url=f"tg://user?id={student_user_id}"
             )
+            admin_kb.adjust(2, 1)
 
-            # Логика отправки медиа остается без изменений
-            ...
+            # Добавили отправку сообщения
+            if submission_data[1]:  # Если есть файл
+                await bot.send_document(
+                    ADMIN_ID,
+                    submission_data[1],
+                    caption=text,
+                    reply_markup=admin_kb.as_markup()
+                )
+            else:
+                await bot.send_message(
+                    ADMIN_ID,
+                    text=text,
+                    reply_markup=admin_kb.as_markup()
+                )
 
     except Exception as e:
         logger.error(f"Notification error: {e}")
@@ -807,39 +822,31 @@ async def notify_admin(submission_id: int, user_id: int):
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
     try:
-        # Парсим данные с валидацией
         data_parts = callback.data.split('_')
         if len(data_parts) != 3:
             raise ValueError("Некорректный формат данных")
             
-        action, submission_id_str, user_id_str = data_parts  # Исправлено здесь
+        action, submission_id_str, user_id_str = data_parts
         submission_id = int(submission_id_str)
-        user_id = int(user_id_str)
-        new_status = "accepted" if action == "accept" else "rejected"
+        student_user_id = int(user_id_str)  # Переименовали для ясности
 
         with db.cursor() as cursor:
-            # Обновляем по submission_id
             cursor.execute('''
                 UPDATE submissions 
                 SET status = %s 
                 WHERE submission_id = %s
                 RETURNING task_id
-            ''', (new_status, submission_id))
+            ''', ("accepted" if action == "accept" else "rejected", submission_id))
             
             task_id = cursor.fetchone()[0]
             
-            # Получаем название задания
-            cursor.execute('''
-                SELECT title FROM tasks WHERE task_id = %s
-            ''', (task_id,))
+            cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
             task_title = cursor.fetchone()[0]
-
             db.conn.commit()
 
-        # Отправка уведомления
         status_text = "принято ✅" if action == "accept" else "отклонено ❌"
         await bot.send_message(
-            user_id, 
+            student_user_id,  # Используем ID из callback_data
             f"📢 Ваше решение по заданию \"{task_title}\" {status_text}."
         )
 
