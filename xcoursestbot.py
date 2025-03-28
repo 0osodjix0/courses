@@ -489,40 +489,51 @@ async def module_selected(callback: types.CallbackQuery):
         module_id = int(callback.data.split("_")[1])
         
         with db.cursor() as cursor:
-            # Получаем информацию о модуле
-            cursor.execute(
-                "SELECT course_id, title FROM modules WHERE module_id = %s",
-                (module_id,)
-            )
+            # Получаем информацию о модуле и курсе
+            cursor.execute('''
+                SELECT m.title, m.course_id, c.title 
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE m.module_id = %s
+            ''', (module_id,))
             module_data = cursor.fetchone()
             
             if not module_data:
                 await callback.answer("❌ Модуль не найден")
                 return
 
+            module_title, course_id, course_title = module_data
+
             # Получаем список заданий
-            cursor.execute(
-                "SELECT task_id, title FROM tasks WHERE module_id = %s",
-                (module_id,)
-            )
+            cursor.execute('''
+                SELECT task_id, title, description 
+                FROM tasks 
+                WHERE module_id = %s 
+                ORDER BY task_order
+            ''', (module_id,))
             tasks = cursor.fetchall()
 
         builder = InlineKeyboardBuilder()
         
         if tasks:
+            # Добавляем задания
             for task in tasks:
                 builder.button(
                     text=f"📝 {task[1]}", 
                     callback_data=f"task_{task[0]}"
                 )
+            
+            # Добавляем кнопку возврата
             builder.button(
-                text="🔙 Назад к модулям", 
-                callback_data=f"back_to_modules_{module_data[0]}"
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{course_id}"
             )
             builder.adjust(1)
             
             await callback.message.edit_text(
-                f"📂 Модуль: {module_data[1]}\nВыберите задание:",
+                f"📂 Курс: {course_title}\n"
+                f"📦 Модуль: {module_title}\n\n"
+                "Выберите задание:",
                 reply_markup=builder.as_markup()
             )
         else:
@@ -531,6 +542,52 @@ async def module_selected(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка загрузки модуля: {e}")
         await callback.answer("❌ Ошибка загрузки модуля")
+
+# Новый обработчик для возврата к списку модулей курса
+@dp.callback_query(F.data.startswith("course_"))
+async def show_course_modules(callback: types.CallbackQuery):
+    try:
+        course_id = int(callback.data.split("_")[1])
+        
+        with db.cursor() as cursor:
+            # Получаем информацию о курсе
+            cursor.execute(
+                "SELECT title FROM courses WHERE course_id = %s",
+                (course_id,)
+            )
+            course_title = cursor.fetchone()[0]
+
+            # Получаем модули курса
+            cursor.execute('''
+                SELECT module_id, title 
+                FROM modules 
+                WHERE course_id = %s 
+                ORDER BY module_order
+            ''', (course_id,))
+            modules = cursor.fetchall()
+
+        builder = InlineKeyboardBuilder()
+        
+        for module in modules:
+            builder.button(
+                text=f"📦 {module[1]}", 
+                callback_data=f"module_{module[0]}"
+            )
+        
+        builder.button(
+            text="🔙 К списку курсов", 
+            callback_data="all_courses"
+        )
+        builder.adjust(1)
+
+        await callback.message.edit_text(
+            f"📚 Курс: {course_title}\nВыберите модуль:",
+            reply_markup=builder.as_markup()
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка загрузки курса: {e}")
+        await callback.answer("❌ Ошибка загрузки курса")
 
 class TaskStates(StatesGroup):
     waiting_for_solution = State()
