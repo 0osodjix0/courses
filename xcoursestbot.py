@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import Optional
 from psycopg2 import OperationalError, IntegrityError
 from aiogram.enums import ParseMode
-from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilderу
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
@@ -719,16 +719,6 @@ def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
         logger.error(f"Ошибка формирования клавиатуры: {e}")
         return InlineKeyboardBuilder().as_markup()
 
-# Обработчик выбора задания
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InputMediaPhoto,
-    InputMediaDocument,
-    ReplyKeyboardRemove
-)
-from aiogram.fsm.context import FSMContext
-
 # Блок показа конкретного задания
 @dp.callback_query(F.data.startswith("task_"))
 async def show_single_task(callback: CallbackQuery, state: FSMContext):
@@ -746,7 +736,7 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
             tsk_data = cursor.fetchone()
 
         if not tsk_data:
-            await callback.answer("❌ Задание не найдено")
+            await callback.answer("❌ Задание не найдено", show_alert=True)
             return
 
         module_id, title, content, file_id, file_type, course_id = tsk_data
@@ -760,23 +750,38 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
         inline_builder.button(text="📋 Список заданий", callback_data=f"list_tasks_{module_id}")
         inline_builder.adjust(2)
 
-        # Отправка контента
-        if file_id:
-            if file_type == 'photo':
-                await callback.message.answer_photo(
-                    file_id,
-                    caption=f"📌 {title}\n\n{content}",
-                    reply_markup=inline_builder.as_markup()
-                )
+        # Удаляем предыдущее сообщение
+        await callback.message.delete()
+
+        # Отправка контента с правильным типом медиа
+        try:
+            if file_id:
+                if file_type == 'photo':
+                    await callback.message.answer_photo(
+                        file_id,
+                        caption=f"📌 {title}\n\n{content}",
+                        reply_markup=inline_builder.as_markup()
+                    )
+                elif file_type == 'document':
+                    await callback.message.answer_document(
+                        file_id,
+                        caption=f"📌 {title}\n\n{content}",
+                        reply_markup=inline_builder.as_markup()
+                    )
+                else:
+                    await callback.message.answer(
+                        f"📌 {title}\n\n{content}\n\n⚠️ Неподдерживаемый тип файла",
+                        reply_markup=inline_builder.as_markup()
+                    )
             else:
-                await callback.message.answer_document(
-                    file_id,
-                    caption=f"📌 {title}\n\n{content}",
+                await callback.message.answer(
+                    f"📌 {title}\n\n{content}",
                     reply_markup=inline_builder.as_markup()
                 )
-        else:
+        except Exception as media_error:
+            logger.error(f"Ошибка отправки медиа: {str(media_error)}")
             await callback.message.answer(
-                f"📌 {title}\n\n{content}",
+                f"📌 {title}\n\n{content}\n\n⚠️ Ошибка загрузки вложения",
                 reply_markup=inline_builder.as_markup()
             )
 
@@ -791,12 +796,9 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
             )
         )
 
-        # Удаляем исходное сообщение с заданиями
-        await callback.message.delete()
-
     except Exception as e:
         logger.error(f"Ошибка показа задания: {str(e)}")
-        await callback.answer("❌ Ошибка загрузки задания")
+        await callback.answer("❌ Ошибка загрузки задания", show_alert=True)
 
 @dp.message(F.text == "📋 Назад к заданиям")
 async def back_to_tasks(message: Message, state: FSMContext):
@@ -817,14 +819,62 @@ async def back_to_tasks(message: Message, state: FSMContext):
         )
         
         # Отправляем обновленный список
-        await message.answer(
+        msg = await message.answer(
             "📋 Список заданий модуля:",
             reply_markup=keyboard
         )
+        # Сохраняем ID последнего сообщения
+        await state.update_data(last_message_id=msg.message_id)
 
     except Exception as e:
         logger.error(f"Ошибка возврата: {str(e)}")
-        await message.answer("❌ Не удалось загрузить задания")
+        await message.answer("❌ Не удалось загрузить задания", reply_markup=ReplyKeyboardRemove())
+
+async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    try:
+        with db.cursor() as cursor:
+            # Валидация модуля
+            cursor.execute('SELECT 1 FROM modules WHERE module_id = %s', (module_id,))
+            if not cursor.fetchone():
+                raise ValueError("Модуль не существует")
+
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+                ORDER BY task_id
+            ''', (module_id,))
+            tasks = cursor.fetchall()
+
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+            
+            builder.button(
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{module_id}"
+            )
+            builder.adjust(1)
+            
+    except Exception as e:
+        logger.error(f"Ошибка формирования клавиатуры: {str(e)}")
+        builder.button(text="❌ Ошибка загрузки", callback_data="error")
+        await message.answer("⚠️ Произошла ошибка при загрузке заданий")
+    
+    return builder.as_markup()
+
+# Универсальный обработчик ошибок
+@dp.errors()
+async def errors_handler(update: types.Update, exception: Exception):
+    logger.error(f"Глобальная ошибка: {str(exception)}")
+    if update.message:
+        await update.message.answer("⚠️ Произошла системная ошибка")
+    elif update.callback_query:
+        await update.callback_query.answer("❌ Ошибка выполнения", show_alert=True)
+    return True
 
 async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
