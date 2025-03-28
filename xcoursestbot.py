@@ -489,13 +489,6 @@ async def show_module_after_submission(message: types.Message, module_id: int):
     except Exception as e:
         logger.error(f"Ошибка отображения модуля: {str(e)}")
         await message.answer("❌ Ошибка загрузки модуля")
-
-@dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
-async def process_solution(message: types.Message, state: FSMContext):
-    if message.text in ["❌ Отмена", "🔙 Назад"]:
-        await state.clear()
-        await message.answer("❌ Отправка отменена", reply_markup=ReplyKeyboardRemove())
-        await show_module_after_submission(message, module_id)  # Получить module_id из состояния
     
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
@@ -895,7 +888,7 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 
 # Универсальный обработчик ошибок
 @dp.errors()
-async def errors_handler(
+async def errors_handler(event: types.TelegramObject, exception: Exception) -> bool:
     event: types.TelegramObject, 
     exception: Exception
 ) -> bool:
@@ -907,30 +900,6 @@ async def errors_handler(
         await event.answer("❌ Ошибка выполнения", show_alert=True)
     
     return True
-
-async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    try:
-        with db.cursor() as cursor:
-            cursor.execute('''
-                SELECT task_id, title 
-                FROM tasks 
-                WHERE module_id = %s
-                ORDER BY task_id
-            ''', (module_id,))
-            tasks = cursor.fetchall()
-
-            for task_id, title in tasks:
-                builder.button(
-                    text=f"📝 {title}",
-                    callback_data=f"task_{task_id}"
-                )
-            
-            builder.button(
-                text="🔙 К модулям курса", 
-                callback_data=f"course_{module_id}"
-            )
-            builder.adjust(1)
             
     except Exception as e:
         logger.error(f"Ошибка формирования клавиатуры: {str(e)}")
