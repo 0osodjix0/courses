@@ -778,6 +778,11 @@ async def task_selected_handler(callback: types.CallbackQuery):
         reply_kb.button(text="🏠 В главное меню")
         reply_kb.adjust(2)
         
+        builder.button(
+    text="📋 К списку заданий", 
+    callback_data=f"list_tasks_{module_id}"
+)
+        
         await callback.message.answer(
             "Выберите действие:",
             reply_markup=reply_kb.as_markup(resize_keyboard=True, one_time_keyboard=True)
@@ -800,6 +805,80 @@ async def get_file_id(message: Message) -> Optional[str]:
 async def back_to_tasks(message: Message):
     # Логика возврата к последнему просмотренному модулю
     pass
+
+@dp.callback_query(F.data.startswith("list_tasks_"))
+async def handle_task_list(callback: types.CallbackQuery):
+    try:
+        # Извлекаем ID модуля из callback_data
+        module_id = int(callback.data.split("_")[2])
+        
+        # Формируем клавиатуру с заданиями
+        keyboard = await generate_tasks_keyboard(module_id)
+        
+        # Редактируем существующее сообщение
+        await callback.message.edit_text(
+            "📋 Список заданий модуля:",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка отображения заданий: {str(e)}")
+        await callback.answer("❌ Не удалось загрузить задания")
+
+async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    
+    try:
+        with db.cursor() as cursor:
+            # Получаем информацию о модуле
+            cursor.execute('''
+                SELECT m.title, c.title 
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE m.module_id = %s
+            ''', (module_id,))
+            module_data = cursor.fetchone()
+            
+            if not module_data:
+                raise ValueError("Модуль не найден")
+            
+            # Получаем задания модуля
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+                ORDER BY task_id
+            ''', (module_id,))
+            tasks = cursor.fetchall()
+
+        # Добавляем задания
+        for task_id, title in tasks:
+            builder.button(
+                text=f"📝 {title}",
+                callback_data=f"task_{task_id}"
+            )
+            
+        # Добавляем кнопки навигации
+        builder.button(
+            text="🔙 К модулям курса", 
+            callback_data=f"course_{module_data[1]}"
+        )
+        builder.button(
+            text="🏠 В главное меню", 
+            callback_data="main_menu"
+        )
+        
+        builder.adjust(1, 2)  # 1 кнопка задания на строку, 2 кнопки внизу
+        
+    except Exception as e:
+        logger.error(f"Ошибка формирования клавиатуры: {str(e)}")
+        builder.button(
+            text="❌ Ошибка загрузки",
+            callback_data="error"
+        )
+    
+    return builder.as_markup()
 
 @dp.message(F.text == "🏠 В главное меню")
 async def main_menu(message: Message):
