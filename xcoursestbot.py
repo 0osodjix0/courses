@@ -398,47 +398,65 @@ async def process_solution(message: types.Message, state: FSMContext):
         task_id = data.get('task_id')
         user_id = message.from_user.id
 
+        # Обработка контента решения
         file_id = None
         content = None
-
         if message.content_type == 'text':
             content = message.text
-        elif message.content_type == 'document':
+        elif message.document:
             file_id = message.document.file_id
-        elif message.content_type == 'photo':
+        elif message.photo:
             file_id = message.photo[-1].file_id
 
-        # Отладка: вывести все атрибуты message
-        print(vars(message))  
-
-        if not task_id:
-            await message.answer("❌ Ошибка: ID задания не найден.")
-            return
-
         with db.cursor() as cursor:
+            # Сохранение решения
             cursor.execute('''
                 INSERT INTO submissions 
-                (user_id, task_id, content, file_id, status, submitted_at)
-                VALUES (%s, %s, %s, %s, 'pending', NOW())
-                RETURNING submission_id
-            ''', (user_id, task_id, content, file_id))
-
+                (user_id, task_id, status, score, submitted_at, file_id, content)
+                VALUES (%s, %s, 'pending', NULL, NOW(), %s, %s)
+            ''', (user_id, task_id, file_id, content))
+            
+            # Получаем ID модуля для навигации
             cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
-            module_data = cursor.fetchone()
-            module_id = module_data[0] if module_data else None
-
+            module_id = cursor.fetchone()[0]
+            
             db.conn.commit()
 
-        if module_id:
-            await handle_module_selection(message, module_id)
-
+        # Исправленный вызов с передачей только module_id
+        await show_module_after_submission(message, module_id)
         await message.answer("✅ Решение успешно отправлено!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
 
     except Exception as e:
         logger.error(f"Ошибка сохранения: {str(e)}")
         await message.answer("❌ Не удалось сохранить решение", reply_markup=ReplyKeyboardRemove())
+
+async def show_module_after_submission(message: types.Message, module_id: int):
+    """Новая функция для навигации после отправки решения"""
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT m.title, c.title 
+            FROM modules m
+            JOIN courses c ON m.course_id = c.course_id
+            WHERE m.module_id = %s
+        ''', (module_id,))
+        module_data = cursor.fetchone()
         
+        cursor.execute('SELECT task_id, title FROM tasks WHERE module_id = %s', (module_id,))
+        tasks = cursor.fetchall()
+
+    builder = InlineKeyboardBuilder()
+    for task in tasks:
+        builder.button(text=f"📝 {task[1]}", callback_data=f"task_{task[0]}")
+    
+    builder.button(text="🔙 Назад к курсу", callback_data=f"course_{module_data[1]}")
+    builder.adjust(1)
+
+    await message.answer(
+        f"📦 Модуль: {module_data[0]}\nВыберите задание:",
+        reply_markup=builder.as_markup()
+    )
+    
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
     text = (
