@@ -210,6 +210,11 @@ def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
         one_time_keyboard=True,
         input_field_placeholder="Выберите действие"
     )
+    builder = InlineKeyboardBuilder()
+    builder.button(
+    text="📋 К списку заданий", 
+    callback_data=f"list_tasks_{task_data[0]}"  # передаем module_id
+
 
 # Обработчики для текстовых команд
 @dp.message(F.text.startswith("✏️ Отправить решение"))
@@ -777,11 +782,6 @@ async def task_selected_handler(callback: types.CallbackQuery):
         reply_kb.button(text="📚 К списку заданий")
         reply_kb.button(text="🏠 В главное меню")
         reply_kb.adjust(2)
-        
-        builder.button(
-    text="📋 К списку заданий", 
-    callback_data=f"list_tasks_{module_id}"
-)
         
         await callback.message.answer(
             "Выберите действие:",
