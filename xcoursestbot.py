@@ -398,7 +398,6 @@ async def process_solution(message: types.Message, state: FSMContext):
         task_id = data.get('task_id')
         user_id = message.from_user.id
 
-        # Получаем file_id или текст в зависимости от типа контента
         file_id = None
         content = None
 
@@ -407,22 +406,23 @@ async def process_solution(message: types.Message, state: FSMContext):
         elif message.content_type == 'document':
             file_id = message.document.file_id
         elif message.content_type == 'photo':
-            file_id = message.photo[-1].file_id  # Берем последнее фото (лучшего качества)
+            file_id = message.photo[-1].file_id
+
+        # Отладка: вывести все атрибуты message
+        print(vars(message))  
 
         if not task_id:
             await message.answer("❌ Ошибка: ID задания не найден.")
             return
 
         with db.cursor() as cursor:
-            # Сохраняем решение
             cursor.execute('''
                 INSERT INTO submissions 
                 (user_id, task_id, content, file_id, status, submitted_at)
                 VALUES (%s, %s, %s, %s, 'pending', NOW())
                 RETURNING submission_id
             ''', (user_id, task_id, content, file_id))
-            
-            # Получаем module_id для навигации
+
             cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
             module_data = cursor.fetchone()
             module_id = module_data[0] if module_data else None
