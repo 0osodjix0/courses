@@ -398,9 +398,16 @@ async def process_solution(message: types.Message, state: FSMContext):
         task_id = data.get('task_id')
         user_id = message.from_user.id
 
-        # Получаем file_id или текст
-        file_id = await get_file_id(message) if message.content_type in ['document', 'photo'] else None
-        content = message.text if message.content_type == 'text' else None
+        # Получаем file_id или текст в зависимости от типа контента
+        file_id = None
+        content = None
+
+        if message.content_type == 'text':
+            content = message.text
+        elif message.content_type == 'document':
+            file_id = message.document.file_id
+        elif message.content_type == 'photo':
+            file_id = message.photo[-1].file_id  # Берем последнее фото (лучшего качества)
 
         if not task_id:
             await message.answer("❌ Ошибка: ID задания не найден.")
@@ -424,6 +431,7 @@ async def process_solution(message: types.Message, state: FSMContext):
 
         if module_id:
             await handle_module_selection(message, module_id)
+
         await message.answer("✅ Решение успешно отправлено!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
 
