@@ -1026,55 +1026,67 @@ async def handle_module_selection(callback: types.CallbackQuery):
                 return
 
 # Основная функция обработки модуля
-async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
-    with db.cursor() as cursor:
-        # Получаем информацию о модуле и курсе
-        cursor.execute('''
-            SELECT m.title, m.course_id, c.title 
-            FROM modules m
-            JOIN courses c ON m.course_id = c.course_id
-            WHERE m.module_id = %s
-        ''', (module_id,))
-        module_data = cursor.fetchone()
+async def handle_module_selection(callback: types.CallbackQuery):
+    try:
+        # Извлекаем module_id из callback данных
+        module_id = int(callback.data.split('_')[1])
         
-        if not module_data:
-            await callback.answer("❌ Модуль не найден")
-            return
+        # Используем асинхронный контекстный менеджер
+        async with db.cursor() as cursor:
+            # Получаем информацию о модуле
+            await cursor.execute('''
+                SELECT m.title, m.course_id, c.title 
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE m.module_id = %s
+            ''', (module_id,))
+            module_data = await cursor.fetchone()
 
-        module_title, course_id, course_title = module_data
+            if not module_data:
+                await callback.answer("❌ Модуль не найден")
+                return
 
-        # Получаем список заданий
-        cursor.execute('''
-            SELECT task_id, title 
-            FROM tasks 
-            WHERE module_id = %s
-        ''', (module_id,))
-        tasks = cursor.fetchall()
+            module_title, course_id, course_title = module_data
 
-    builder = InlineKeyboardBuilder()
-    
-    if tasks:
-        for task_id, title in tasks:
-            builder.button(
-                text=f"📝 {title}",
-                callback_data=f"task_{task_id}"
+            # Получаем список заданий
+            await cursor.execute(
+                "SELECT task_id, title FROM tasks WHERE module_id = %s",
+                (module_id,)
             )
+            tasks = await cursor.fetchall()
+
+        # Строим клавиатуру
+        builder = InlineKeyboardBuilder()
         
-        # Кнопка возврата к модулям курса
-        builder.button(
-            text="🔙 К модулям курса", 
-            callback_data=f"course_{course_id}"
-        )
-        builder.adjust(1)
+        if tasks:
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+            
+            builder.button(
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{course_id}"
+            )
+            builder.adjust(1)
+            
+            await callback.message.edit_text(
+                f"📚 Курс: {course_title}\n"
+                f"📦 Модуль: {module_title}\n\n"
+                "Выберите задание:",
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+
+    except (IndexError, ValueError) as e:
+        logger.error(f"Ошибка формата данных: {e}")
+        await callback.answer("❌ Некорректный идентификатор модуля")
+    except Exception as e:
+        logger.error(f"Ошибка обработки модуля: {e}")
+        await callback.answer("❌ Ошибка загрузки модуля")
         
-        await callback.message.edit_text(
-            f"📚 Курс: {course_title}\n"
-            f"📦 Модуль: {module_title}\n\n"
-            "Выберите задание:",
-            reply_markup=builder.as_markup()
-        )
-    else:
-        await callback.answer("ℹ️ В этом модуле пока нет заданий")
         # Обработчик списка всех курсов
 @dp.callback_query(F.data == "all_courses")
 async def show_all_courses(callback: types.CallbackQuery):
