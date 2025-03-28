@@ -699,63 +699,64 @@ async def back_to_module_handler(callback: types.CallbackQuery):
 # Обертка для обработчика модулей
 @dp.callback_query(F.data.startswith("module_"))
 async def handle_module_selection_wrapper(callback: types.CallbackQuery):
-    module_id = int(callback.data.split("_")[1])
-    await handle_module_selection(callback, module_id)
+    try:
         module_id = int(callback.data.split("_")[1])
-        
-        with db.cursor() as cursor:
-            # Получаем информацию о модуле и курсе
-            cursor.execute('''
-                SELECT m.title, m.course_id, c.title 
-                FROM modules m
-                JOIN courses c ON m.course_id = c.course_id
-                WHERE m.module_id = %s
-            ''', (module_id,))
-            module_data = cursor.fetchone()
-            
-            if not module_data:
-                await callback.answer("❌ Модуль не найден")
-                return
-
-            module_title, course_id, course_title = module_data
-
-            # Получаем список заданий
-            cursor.execute('''
-                SELECT task_id, title 
-                FROM tasks 
-                WHERE module_id = %s
-            ''', (module_id,))
-            tasks = cursor.fetchall()
-
-        builder = InlineKeyboardBuilder()
-        
-        if tasks:
-            for task_id, title in tasks:
-                builder.button(
-                    text=f"📝 {title}",
-                    callback_data=f"task_{task_id}"
-                )
-            
-            # Кнопка возврата к модулям курса
-            builder.button(
-                text="🔙 К модулям курса", 
-                callback_data=f"course_{course_id}"
-            )
-            builder.adjust(1)
-            
-            await callback.message.edit_text(
-                f"📚 Курс: {course_title}\n"
-                f"📦 Модуль: {module_title}\n\n"
-                "Выберите задание:",
-                reply_markup=builder.as_markup()
-            )
-        else:
-            await callback.answer("ℹ️ В этом модуле пока нет заданий")
-
+        await handle_module_selection(callback, module_id)
     except Exception as e:
-        logger.error(f"Ошибка загрузки модуля: {e}")
+        logger.error(f"Ошибка обработки модуля: {e}")
         await callback.answer("❌ Ошибка загрузки модуля")
 
+# Основная функция обработки модуля
+async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
+    with db.cursor() as cursor:
+        # Получаем информацию о модуле и курсе
+        cursor.execute('''
+            SELECT m.title, m.course_id, c.title 
+            FROM modules m
+            JOIN courses c ON m.course_id = c.course_id
+            WHERE m.module_id = %s
+        ''', (module_id,))
+        module_data = cursor.fetchone()
+        
+        if not module_data:
+            await callback.answer("❌ Модуль не найден")
+            return
+
+        module_title, course_id, course_title = module_data
+
+        # Получаем список заданий
+        cursor.execute('''
+            SELECT task_id, title 
+            FROM tasks 
+            WHERE module_id = %s
+        ''', (module_id,))
+        tasks = cursor.fetchall()
+
+    builder = InlineKeyboardBuilder()
+    
+    if tasks:
+        for task_id, title in tasks:
+            builder.button(
+                text=f"📝 {title}",
+                callback_data=f"task_{task_id}"
+            )
+        
+        # Кнопка возврата к модулям курса
+        builder.button(
+            text="🔙 К модулям курса", 
+            callback_data=f"course_{course_id}"
+        )
+        builder.adjust(1)
+        
+        await callback.message.edit_text(
+            f"📚 Курс: {course_title}\n"
+            f"📦 Модуль: {module_title}\n\n"
+            "Выберите задание:",
+            reply_markup=builder.as_markup()
+        )
+    else:
+        await callback.answer("ℹ️ В этом модуле пока нет заданий")
+        
 # Обработчик возврата к списку модулей курса
 @dp.callback_query(F.data.startswith("course_"))
 async def show_course_modules(callback: types.CallbackQuery):
