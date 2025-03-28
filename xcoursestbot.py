@@ -281,6 +281,43 @@ def module_tasks_keyboard(module_id: int) -> types.ReplyKeyboardMarkup:
     # Добавление кнопок заданий модуля
     return builder.as_markup()
 
+def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
+    """Генерирует клавиатуру с модулями курса"""
+    builder = InlineKeyboardBuilder()
+    
+    try:
+        with db.cursor() as cursor:
+            # Проверяем существование курса
+            cursor.execute("SELECT 1 FROM courses WHERE course_id = %s", (course_id,))
+            if not cursor.fetchone():
+                builder.button(text="❌ Курс не найден", callback_data="course_error")
+                return builder.as_markup()
+
+            # Получаем модули курса
+            cursor.execute(
+                "SELECT module_id, title FROM modules WHERE course_id = %s ORDER BY module_id",
+                (course_id,)
+            )
+            modules = cursor.fetchall()
+
+            if modules:
+                for module_id, title in modules:
+                    builder.button(
+                        text=f"📦 {title}",
+                        callback_data=f"module_{module_id}"
+                    )
+                builder.button(text="🔙 К списку курсов", callback_data="all_courses")
+            else:
+                builder.button(text="❌ Нет доступных модулей", callback_data="no_modules")
+            
+            builder.adjust(1)
+
+    except Exception as e:
+        logger.error(f"Ошибка формирования клавиатуры модулей: {e}")
+        builder.button(text="⚠️ Ошибка загрузки", callback_data="error")
+    
+    return builder.as_markup()
+
 # Добавляем обработчик для кнопки "Назад к модулю"
 @dp.callback_query(F.data.startswith("module_from_task_"))
 async def back_to_module_handler(callback: types.CallbackQuery):
@@ -1485,23 +1522,23 @@ async def select_course_handler(callback: types.CallbackQuery):
                 return
 
             title, media_id = course_data
-            modules = modules_kb(course_id)
+            keyboard = modules_kb(course_id)  # Используем нашу функцию
             
             if media_id:
                 await callback.message.delete()
                 await callback.message.answer_photo(
                     media_id,
                     caption=f"📚 Курс: {title}\nВыберите модуль:",
-                    reply_markup=modules
+                    reply_markup=keyboard
                 )
             else:
                 await callback.message.edit_text(
                     text=f"📚 Курс: {title}\nВыберите модуль:",
-                    reply_markup=modules
+                    reply_markup=keyboard
                 )
 
     except Exception as e:
-        logger.error("Ошибка выбора курса: %s", e)
+        logger.error(f"Ошибка выбора курса: {e}")
         await callback.answer("❌ Ошибка загрузки курса")
 
 @dp.message(F.text == "📝 Добавить курс")
