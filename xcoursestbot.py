@@ -12,6 +12,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
+from aiogram.middleware.base import BaseMiddleware  
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
@@ -43,6 +44,22 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 
 # Парсинг URL базы данных
 parsed_db = urlparse(DATABASE_URL)
+
+class CleanupMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[types.Message, dict], Awaitable[Any]],
+        event: types.Message,
+        data: dict
+    ) -> Any:
+        if event.text in ["❌ Отмена", "🔙 Назад"]:
+            state = data.get("state")
+            if state:
+                await state.clear()
+        return await handler(event, data)
+
+# Регистрация Middleware
+dp.message.middleware.register(CleanupMiddleware())
 
 class Database:
     def __init__(self):
@@ -381,8 +398,8 @@ async def process_solution(message: Message, state: FSMContext):
         task_id = data['task_id']
         user_id = message.from_user.id
         
-        # Сохранение решения в БД
         with db.cursor() as cursor:
+            # Сохранение решения
             cursor.execute('''
                 INSERT INTO submissions 
                 (user_id, task_id, content, file_id, status)
@@ -392,17 +409,16 @@ async def process_solution(message: Message, state: FSMContext):
                 user_id,
                 task_id,
                 message.text or None,
-                await get_file_id(message)  # Ваша функция для получения file_id
+                await get_file_id(message)
             ))
             submission_id = cursor.fetchone()[0]
+            
+            # Получаем module_id в том же контексте
+            cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
+            module_id = cursor.fetchone()[0]
         
-        # Получаем module_id для возврата
-        cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
-        module_id = cursor.fetchone()[0]
-        
-        # Возвращаемся к списку заданий модуля
+        # Возврат к списку заданий
         await handle_module_selection(message, module_id)
-        
         await message.answer("✅ Решение отправлено на проверку!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
 
@@ -1467,6 +1483,29 @@ async def select_course_for_module(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Введите название модуля:")
     await state.set_state(AdminForm.add_module_title)
 
+# Обработчик кнопки "Отмена"
+@dp.message(F.text.lower() == "❌ отмена")
+async def cancel_handler(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Действие отменено",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+# Обработчик кнопки "Назад"
+@dp.message(F.text.lower() == "🔙 назад")
+async def back_handler(message: Message):
+    await message.answer(
+        "Возврат в предыдущее меню",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    # Добавьте логику возврата
+
+# Фильтр для игнорирования кнопок в других обработчиках
+class NotButtonFilter(Filter):
+    async def __call__(self, message: Message) -> bool:
+        return message.text not in ["❌ Отмена", "🔙 Назад"]
+        
 @dp.message(AdminForm.add_module_title)
 async def process_module_title(message: Message, state: FSMContext):
     if message.text == "🔙 Назад":
