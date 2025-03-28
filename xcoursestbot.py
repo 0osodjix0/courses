@@ -182,22 +182,99 @@ def main_menu() -> types.ReplyKeyboardMarkup:
     
 def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
-    builder.button(text="🔄 Отправить исправление", callback_data=f"retry_{task_id}")
-    builder.button(text="🔙 Назад к модулю", callback_data=f"back_to_module_{task_id}")
+    builder.button(
+        text="✏️ Отправить решение", 
+        callback_data=f"submit_{task_id}"
+    )
+    builder.button(
+        text="🔄 Отправить исправление", 
+        callback_data=f"retry_{task_id}"
+    )
+    builder.button(
+        text="🔙 Назад к модулю", 
+        callback_data=f"module_from_task_{task_id}"  # Измененный формат
+    )
     builder.adjust(1)
     return builder.as_markup()
 
-def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(
-        text="✏️ Отправить решение", 
-        callback_data=f"submit_{task_id}"  # Формат: "submit_123"
-    )
-    builder.button(text="🔄 Отправить исправление", callback_data=f"retry_{task_id}")
-    builder.button(text="🔙 Назад к модулю", callback_data=f"back_to_module_{task_id}")
-    builder.adjust(1)
-    return builder.as_markup()
+# Добавляем обработчик для кнопки "Назад к модулю"
+@dp.callback_query(F.data.startswith("module_from_task_"))
+async def back_to_module_handler(callback: types.CallbackQuery):
+    try:
+        task_id = int(callback.data.split("_")[-1])
+        
+        with db.cursor() as cursor:
+            # Получаем module_id по task_id
+            cursor.execute('''
+                SELECT module_id 
+                FROM tasks 
+                WHERE task_id = %s
+            ''', (task_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                await callback.answer("❌ Модуль не найден")
+                return
+                
+            module_id = result[0]
+        
+        # Вызываем обработчик модуля с полученным ID
+        await handle_module_selection(callback, module_id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка возврата к модулю: {e}")
+        await callback.answer("❌ Ошибка загрузки модуля")
+
+# Модифицируем существующий обработчик модуля
+async def handle_module_selection(callback: types.CallbackQuery, module_id: int):
+    try:
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT m.title, m.course_id, c.title 
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE m.module_id = %s
+            ''', (module_id,))
+            module_data = cursor.fetchone()
+            
+            if not module_data:
+                await callback.answer("❌ Модуль не найден")
+                return
+
+            module_title, course_id, course_title = module_data
+
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+            ''', (module_id,))
+            tasks = cursor.fetchall()
+
+        builder = InlineKeyboardBuilder()
+        
+        if tasks:
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+            
+            builder.button(
+                text="🔙 К модулям курса", 
+                callback_data=f"course_{course_id}"
+            )
+            builder.adjust(1)
+            
+            await callback.message.edit_text(
+                f"📚 Курс: {course_title}\n📦 Модуль: {module_title}\n\nВыберите задание:",
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+
+    except Exception as e:
+        logger.error(f"Ошибка загрузки модуля: {e}")
+        await callback.answer("❌ Ошибка загрузки модуля")
     
 def cancel_button():
     builder = InlineKeyboardBuilder()
