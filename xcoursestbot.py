@@ -889,23 +889,19 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 # Универсальный обработчик ошибок
 @dp.errors()
 async def errors_handler(event: types.TelegramObject, exception: Exception) -> bool:
-    event: types.TelegramObject, 
-    exception: Exception
-) -> bool:
+    """Глобальный обработчик ошибок"""
     logger.error(f"Глобальная ошибка: {str(exception)}")
     
-    if isinstance(event, types.Message):
-        await event.answer("⚠️ Произошла системная ошибка")
-    elif isinstance(event, types.CallbackQuery):
-        await event.answer("❌ Ошибка выполнения", show_alert=True)
-    
-    return True
+    try:
+        if isinstance(event, types.Message):
+            await event.answer("⚠️ Произошла системная ошибка")
+        elif isinstance(event, types.CallbackQuery):
+            await event.answer("❌ Ошибка выполнения", show_alert=True)
             
     except Exception as e:
-        logger.error(f"Ошибка формирования клавиатуры: {str(e)}")
-        builder.button(text="❌ Ошибка", callback_data="error")
-    
-    return builder.as_markup()
+        logger.error(f"Ошибка обработки исключения: {str(e)}")
+        
+    return True
 
 @dp.message(F.text == "🏠 В главное меню")
 async def handle_main_menu(message: Message, state: FSMContext):
