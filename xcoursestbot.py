@@ -210,11 +210,11 @@ def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
         one_time_keyboard=True,
         input_field_placeholder="Выберите действие"
     )
-      builder = InlineKeyboardBuilder()
+    builder = InlineKeyboardBuilder()
     builder.button(
         text="📋 К списку заданий", 
         callback_data=f"list_tasks_{task_data[0]}"  # передаем module_id
-
+    )
 
 # Обработчики для текстовых команд
 @dp.message(F.text.startswith("✏️ Отправить решение"))
