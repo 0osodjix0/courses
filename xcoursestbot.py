@@ -180,12 +180,13 @@ def main_menu() -> types.ReplyKeyboardMarkup:
         one_time_keyboard=False  # Клавиатура остается открытой
     )
     
-def task_keyboard(task_id: int) -> types.ReplyKeyboardMarkup:
-    builder = ReplyKeyboardBuilder()
-    builder.button(text=f"✏️ Отправить решение {task_id}")
-    builder.button(text=f"🔄 Отправить исправление {task_id}")
-    builder.button(text=f"🔙 Назад к модулю {task_id}")
+def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
+    builder.button(text="🔄 Отправить исправление", callback_data=f"retry_{task_id}")
+    builder.button(text="🔙 Назад к модулю", callback_data=f"module_from_task_{task_id}")
     builder.adjust(1)
+    return builder.as_markup()
     return builder.as_markup(
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -583,41 +584,27 @@ async def task_selected_handler(callback: types.CallbackQuery):
             if score is not None:
                 text += f"\nОценка: {score}/100"
 
-        # Создаем клавиатуру перед отправкой сообщения
         keyboard = task_keyboard(task_id)
 
         try:
+            # Редактируем исходное сообщение вместо отправки нового
             if file_id and file_type:
-                # Отправляем новое сообщение с медиа и клавиатурой
-                if file_type == 'photo':
-                    await callback.message.answer_photo(
-                        file_id,
-                        caption=text,
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.HTML
-                    )
-                else:
-                    await callback.message.answer_document(
-                        file_id,
-                        caption=text,
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.HTML
-                    )
+                await callback.message.edit_media(
+                    media=InputMediaPhoto(media=file_id, caption=text) if file_type == 'photo' 
+                    else InputMediaDocument(media=file_id, caption=text),
+                    reply_markup=keyboard
+                )
             else:
-                # Отправляем текстовое сообщение с клавиатурой
-                await callback.message.answer(
+                await callback.message.edit_text(
                     text,
                     reply_markup=keyboard,
                     parse_mode=ParseMode.HTML
                 )
-            
-            # Удаляем исходное сообщение с кнопкой задания
-            await callback.message.delete()
 
         except Exception as e:
-            logger.error(f"Ошибка отправки медиа: {e}")
+            logger.error(f"Ошибка редактирования сообщения: {e}")
             await callback.message.answer(
-                "⚠️ Не удалось загрузить вложение задания",
+                "⚠️ Не удалось обновить задание",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
