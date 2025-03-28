@@ -392,32 +392,25 @@ async def handle_submit_solution(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("❌ Ошибка отправки решения")
 
 @dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
-async def process_solution(message: Message, state: FSMContext):
+async def process_solution(message: types.Message, state: FSMContext):
     try:
         data = await state.get_data()
         task_id = data['task_id']
         user_id = message.from_user.id
         
         with db.cursor() as cursor:
-            # Сохранение решения
             cursor.execute('''
-                INSERT INTO submissions 
-                (user_id, task_id, content, file_id, status)
-                VALUES (%s, %s, %s, %s, 'pending')
+                INSERT INTO submissions (...) 
+                VALUES (...)
                 RETURNING submission_id
-            ''', (
-                user_id,
-                task_id,
-                message.text or None,
-                await get_file_id(message)
-            ))
+            ''', (...))
             submission_id = cursor.fetchone()[0]
             
-            # Получаем module_id в том же контексте
+            # Исправленный вызов без .message
             cursor.execute('SELECT module_id FROM tasks WHERE task_id = %s', (task_id,))
             module_id = cursor.fetchone()[0]
         
-        # Возврат к списку заданий
+        # Используем message напрямую
         await handle_module_selection(message, module_id)
         await message.answer("✅ Решение отправлено на проверку!", reply_markup=ReplyKeyboardRemove())
         await state.clear()
