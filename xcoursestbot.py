@@ -489,6 +489,13 @@ async def show_module_after_submission(message: types.Message, module_id: int):
     except Exception as e:
         logger.error(f"Ошибка отображения модуля: {str(e)}")
         await message.answer("❌ Ошибка загрузки модуля")
+
+@dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
+async def process_solution(message: types.Message, state: FSMContext):
+    if message.text in ["❌ Отмена", "🔙 Назад"]:
+        await state.clear()
+        await message.answer("❌ Отправка отменена", reply_markup=ReplyKeyboardRemove())
+        await show_module_after_submission(message, module_id)  # Получить module_id из состояния
     
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
@@ -1259,6 +1266,7 @@ async def notify_admin(submission_id: int):
             
             submission_data = cursor.fetchone()
             if not submission_data:
+                logger.error("Данные решения не найдены")
                 return
 
             content, file_id, full_name, title, student_user_id = submission_data
@@ -1271,42 +1279,47 @@ async def notify_admin(submission_id: int):
             )
 
             admin_kb = InlineKeyboardBuilder()
-            admin_kb.button(
-                text="✅ Принять", 
-                callback_data=f"accept_{submission_id}_{student_user_id}"
-            )
-            admin_kb.button(
-                text="❌ Требует правок", 
-                callback_data=f"reject_{submission_id}_{student_user_id}"
-            )
-            admin_kb.button(
-                text="📨 Написать студенту", 
-                url=f"tg://user?id={student_user_id}"
-            )
+            admin_kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}_{student_user_id}")
+            admin_kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}_{student_user_id}")
+            admin_kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_user_id}")
             admin_kb.adjust(2, 1)
 
-            # Отправка медиафайлов
+            # Если есть файл
             if file_id:
-                file_type, fid = file_id.split(":", 1)
-                await send_media_with_caption(
-                    file_type, 
-                    fid, 
-                    text, 
-                    admin_kb.as_markup()
-                )
+                try:
+                    # Разделяем тип и ID файла
+                    file_type, fid = file_id.split(":", 1)
+                    if file_type == "photo":
+                        await bot.send_photo(
+                            ADMIN_ID,
+                            photo=fid,
+                            caption=text,
+                            reply_markup=admin_kb.as_markup()
+                        )
+                    elif file_type == "doc":
+                        await bot.send_document(
+                            ADMIN_ID,
+                            document=fid,
+                            caption=text,
+                            reply_markup=admin_kb.as_markup()
+                        )
+                except Exception as e:
+                    logger.error(f"Ошибка отправки медиа: {str(e)}")
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"{text}\n\n⚠️ Ошибка вложения",
+                        reply_markup=admin_kb.as_markup()
+                    )
             else:
                 await bot.send_message(
                     ADMIN_ID,
-                    text=text,
+                    text,
                     reply_markup=admin_kb.as_markup()
                 )
 
     except Exception as e:
-        logger.error(f"Notification error: {e}")
-        await bot.send_message(
-            ADMIN_ID,
-            f"⚠️ Ошибка уведомления\nID решения: {submission_id}\nОшибка: {str(e)[:200]}"
-        )
+        logger.error(f"Ошибка уведомления: {str(e)}")
+        await bot.send_message(ADMIN_ID, f"⚠️ Ошибка обработки решения #{submission_id}")
         
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_submission_review(callback: types.CallbackQuery):
@@ -1674,12 +1687,22 @@ async def select_course_for_module(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminForm.add_module_title)
 
 # Обработчик кнопки "Отмена"
-@dp.message(F.text.lower() == "❌ отмена")
-async def cancel_handler(message: Message, state: FSMContext):
-    await state.clear()
+@dp.message(F.text.in_(["❌ Отмена", "🔙 Назад"]))
+async def cancel_actions_handler(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state:
+        await state.clear()
+    
+    # Удаляем предыдущие сообщения с клавиатурами
     await message.answer(
         "Действие отменено",
         reply_markup=ReplyKeyboardRemove()
+    )
+    
+    # Возвращаем в главное меню
+    await message.answer(
+        "Главное меню:",
+        reply_markup=main_menu()
     )
 
 # Обработчик кнопки "Назад"
