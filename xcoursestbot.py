@@ -1878,9 +1878,54 @@ async def cancel_handler(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("reject_"))
 async def handle_reject(callback: types.CallbackQuery):
     try:
-        # Аналогичная валидация данных
-    except ValueError as e:
-        # Обработка ошибок
+        # Полная реализация аналогично обработчику accept_
+        data = callback.data.split('_')
+        if len(data) != 3:
+            raise ValueError(f"Invalid callback data: {callback.data}")
+            
+        _, submission_id_str, user_id_str = data
+        
+        submission_id = int(submission_id_str)
+        student_id = int(user_id_str)
+        
+        with db.cursor() as cursor:
+            cursor.execute('''
+                UPDATE submissions 
+                SET status = 'rejected'
+                WHERE submission_id = %s
+                RETURNING task_id
+            ''', (submission_id,))
+            
+            result = cursor.fetchone()
+            if not result:
+                await callback.answer("❌ Решение не найдено")
+                return
+                
+            task_id = result[0]
+
+            cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
+            task_title = cursor.fetchone()[0]
+            db.conn.commit()
+
+        await bot.send_message(
+            student_id,
+            f"📢 Ваше решение по заданию «{task_title}» отклонено ❌"
+        )
+        await callback.message.delete()
+        await callback.answer("✅ Статус обновлен!")
+
+    except (ValueError, IndexError) as e:
+        logger.error(f"Ошибка данных: {str(e)}")
+        await callback.answer("❌ Ошибка формата данных", show_alert=True)
+        
+    except psycopg2.Error as e:
+        logger.error(f"Ошибка БД: {str(e)}")
+        await callback.answer("⚠️ Ошибка базы данных", show_alert=True)
+        db.conn.rollback()
+        
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {str(e)}", exc_info=True)
+        await callback.answer("⚠️ Системная ошибка", show_alert=True)
 
 @dp.message(F.text == "🔙 В главное меню")
 async def back_to_main(message: Message):
