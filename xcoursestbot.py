@@ -1263,52 +1263,66 @@ async def handle_module_selection(callback: types.CallbackQuery):
     try:
         module_id = int(callback.data.split('_')[1])
         
-        with db.cursor() as cursor:  # Используем синхронный контекст
+        # Удаляем предыдущее сообщение с клавиатурой
+        try:
+            await callback.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+
+        # Получаем данные модуля
+        with db.cursor() as cursor:
             cursor.execute('''
-                SELECT m.title, m.course_id, c.title 
+                SELECT m.title, c.title, m.course_id 
                 FROM modules m
                 JOIN courses c ON m.course_id = c.course_id
                 WHERE m.module_id = %s
             ''', (module_id,))
             module_data = cursor.fetchone()
 
-            if not module_data:
-                await callback.answer("❌ Модуль не найден")
-                return
+        if not module_data:
+            await callback.answer("❌ Модуль не найден")
+            return
 
-            module_title, course_id, course_title = module_data
+        module_title, course_title, course_id = module_data
 
-            cursor.execute(
-                "SELECT task_id, title FROM tasks WHERE module_id = %s",
-                (module_id,)
-            )
+        # Получаем задания модуля
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT task_id, title 
+                FROM tasks 
+                WHERE module_id = %s
+            ''', (module_id,))
             tasks = cursor.fetchall()
 
+        # Создаем новое сообщение вместо редактирования
         builder = InlineKeyboardBuilder()
-        
-        if tasks:
-            for task_id, title in tasks:
-                builder.button(
-                    text=f"📝 {title}",
-                    callback_data=f"task_{task_id}"
-                )
-            
-            builder.button(
-                text="🔙 К модулям курса", 
-                callback_data=f"course_{course_id}"
-            )
-            builder.adjust(1)
-            
-            await callback.message.edit_text(
-                f"📚 Курс: {course_title}\n📦 Модуль: {module_title}\n\nВыберите задание:",
-                reply_markup=builder.as_markup()
-            )
-        else:
-            await callback.answer("ℹ️ В этом модуле пока нет заданий")
+        for task_id, title in tasks:
+            builder.button(text=f"📝 {title}", callback_data=f"task_{task_id}")
+        builder.button(text="🔙 К курсу", callback_data=f"course_{course_id}")
+        builder.adjust(1)
+
+        await callback.message.answer(
+            f"📦 Модуль: {module_title}\nВыберите задание:",
+            reply_markup=builder.as_markup()
+        )
+        await callback.answer()
 
     except Exception as e:
         logger.error(f"Ошибка обработки модуля: {e}")
         await callback.answer("❌ Ошибка загрузки модуля")
+
+@dp.callback_query(F.data.startswith("your_pattern"))
+async def handler(callback: CallbackQuery):
+    try:
+        # Удаляем предыдущую клавиатуру
+        await callback.message.delete()
+        
+        # Создаем новое сообщение
+        await callback.message.answer(...)
+        
+    except Exception as e:
+        logger.error(...)
+        await callback.answer(...)
         
         # Обработчик списка всех курсов
 @dp.callback_query(F.data == "all_courses")
