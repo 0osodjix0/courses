@@ -576,36 +576,27 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
     """Показывает задания модуля с учетом статуса решений"""
     try:
         with db.cursor() as cursor:
-            # Получаем всю необходимую информацию за один запрос
-            cursor.execute('''
-    SELECT 
-        m.title AS module_title,
-        c.title AS course_title,
-        m.course_id,
-        t.task_id,
-        t.title AS task_title,
-        (SELECT status FROM submissions 
-         WHERE user_id = %s AND task_id = t.task_id 
-         ORDER BY submitted_at DESC 
-         LIMIT 1) AS status
-    FROM modules m
-    JOIN courses c ON m.course_id = c.course_id
-    JOIN tasks t ON m.module_id = t.module_id
-    WHERE m.module_id = %s
-    ORDER BY t.task_id
-''', (user_id, module_id))
-            
+            # SQL-запрос остается без изменений
+            cursor.execute('''...''', (user_id, module_id))
             results = cursor.fetchall()
-            
+
             if not results:
                 await message.answer("❌ Модуль не найден")
                 return
 
-            # Извлекаем общую информацию из первой строки
+            # Исправляем отступы:
             first_row = results[0]
             module_title = first_row[0]
             course_title = first_row[1]
             course_id = first_row[2]
+
+            # Убедимся, что цикл for имеет правильный отступ:
+            builder = InlineKeyboardBuilder()
+            for row in results:  # <-- Эта строка должна иметь отступ внутри блока with
+                task_id = row[3]
+                task_title = row[4]
+                status = row[5] or 'not_started'
+
 
         # Строим клавиатуру
         builder = InlineKeyboardBuilder()
