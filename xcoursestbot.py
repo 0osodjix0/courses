@@ -38,8 +38,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-dp = Dispatcher(bot=bot, storage=storage)
-
 # Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
@@ -179,7 +177,8 @@ class Database:
 
 # Инициализация объектов
 bot = Bot(token=TOKEN)
-dp = Dispatcher(storage=storage)
+storage = MemoryStorage()
+dp = Dispatcher(bot=bot, storage=storage)  # Передаем bot явно
 db = Database()
 
 class Form(StatesGroup):
@@ -221,7 +220,6 @@ def task_keyboard(task_id: int) -> types.InlineKeyboardMarkup:
     builder.button(text="🔄 Отправить исправление", callback_data=f"retry_{task_id}")
     builder.button(text="🔙 Назад к модулю", callback_data=f"module_from_task_{task_id}")
     builder.adjust(1)
-    return builder.as_markup()
     return builder.as_markup(
         resize_keyboard=True,
         one_time_keyboard=True,
