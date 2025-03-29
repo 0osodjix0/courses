@@ -576,78 +576,96 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
     """Показывает задания модуля с учетом статуса решений"""
     try:
         with db.cursor() as cursor:
-            # SQL-запрос остается без изменений
-            cursor.execute('''...''', (user_id, module_id))
+            cursor.execute('''
+                SELECT 
+                    m.title AS module_title,
+                    c.title AS course_title,
+                    m.course_id,
+                    t.task_id,
+                    t.title AS task_title,
+                    COALESCE(s.status, 'not_started') AS status
+                FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
+                JOIN tasks t ON m.module_id = t.module_id
+                LEFT JOIN LATERAL (
+                    SELECT status 
+                    FROM submissions 
+                    WHERE user_id = %s 
+                    AND task_id = t.task_id 
+                    ORDER BY submitted_at DESC 
+                    LIMIT 1
+                ) s ON true
+                WHERE m.module_id = %s
+                ORDER BY t.task_id
+            ''', (user_id, module_id))
+            
             results = cursor.fetchall()
-
+            
             if not results:
                 await message.answer("❌ Модуль не найден")
                 return
 
-            # Исправляем отступы:
+            # Извлекаем общую информацию из первой строки
             first_row = results[0]
             module_title = first_row[0]
             course_title = first_row[1]
             course_id = first_row[2]
 
-            # Убедимся, что цикл for имеет правильный отступ:
+            # Строим клавиатуру
             builder = InlineKeyboardBuilder()
-            for row in results:  # <-- Эта строка должна иметь отступ внутри блока with
-                task_id = row[3]
-                task_title = row[4]
-                status = row[5] or 'not_started'
+            
+            for row in results:
+                _, _, _, task_id, task_title, status = row
+                
+                # Формируем текст и callback_data для кнопки
+                status_icons = {
+                    'accepted': '✅',
+                    'rejected': '❌',
+                    'pending': '⏳',
+                    'not_started': '📝'
+                }
+                icon = status_icons.get(status, '📝')
+                
+                if status == 'accepted':
+                    builder.button(
+                        text=f"{icon} {task_title} (Завершено)",
+                        callback_data=f"completed_{task_id}"
+                    )
+                else:
+                    builder.button(
+                        text=f"{icon} {task_title}",
+                        callback_data=f"task_{task_id}"
+                    )
+                    
+                    # Добавляем кнопку исправления для отклоненных
+                    if status == 'rejected':
+                        builder.button(
+                            text=f"🔄 Исправить",
+                            callback_data=f"retry_{task_id}"
+                        )
 
+            # Навигационные кнопки
+            builder.button(
+                text="🔙 К курсу", 
+                callback_data=f"course_{course_id}"
+            )
+            builder.button(
+                text="🏠 В главное меню", 
+                callback_data="main_menu"
+            )
+            
+            # Настройка расположения кнопок
+            builder.adjust(1, 2, 2)
 
-        # Строим клавиатуру
-        builder = InlineKeyboardBuilder()
-        
-       for row in results:
-    task_id = row[3]
-    task_title = row[4]
-    status = row[5] or 'not_started'
-
-    status_config = {
-        'accepted': {'icon': '✅', 'text': f"{task_title} (Принято)", 'callback': f"info_{task_id}"},
-        'rejected': {'icon': '❌', 'text': f"{task_title} (Требует правок)", 'callback': f"task_{task_id}"},
-        'pending': {'icon': '⏳', 'text': f"{task_title} (На проверке)", 'callback': f"info_{task_id}"},
-        'not_started': {'icon': '📝', 'text': task_title, 'callback': f"task_{task_id}"}
-    }
-
-    cfg = status_config.get(status, status_config['not_started'])
-    
-    builder.button(
-        text=f"{cfg['icon']} {cfg['text']}",
-        callback_data=cfg['callback']
-    )
-
-    if status == 'rejected':
-        builder.button(
-            text="🔄 Исправить",
-            callback_data=f"retry_{task_id}"
-        )
-
-        # Навигационные кнопки
-        builder.button(
-            text="🔙 К модулям", 
-            callback_data=f"course_{course_id}"
-        )
-        builder.button(
-            text="🏠 В главное меню", 
-            callback_data="main_menu"
-        )
-        
-        # Настройка расположения кнопок
-        builder.adjust(1, 2, 2)
-
-        # Отправка сообщения
-        await message.answer(
-            f"📚 Курс: {course_title}\n"
-            f"📦 Модуль: {module_title}\n\n"
-            "Статус заданий:\n"
-            "✅ - принято\n❌ - отклонено\n⏳ - на проверке\n📝 - не начато\n\n"
-            "Выберите задание:",
-            reply_markup=builder.as_markup()
-        )
+            # Отправка сообщения
+            await message.answer(
+                f"📚 Курс: {course_title}\n"
+                f"📦 Модуль: {module_title}\n\n"
+                "Статус заданий:\n"
+                "✅ - принято\n❌ - отклонено\n⏳ - на проверке\n📝 - не начато\n\n"
+                "Выберите задание:",
+                reply_markup=builder.as_markup()
+            )
 
     except Exception as e:
         logger.error(f"Module tasks error: {str(e)}", exc_info=True)
@@ -655,7 +673,6 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
             "❌ Ошибка при загрузке заданий",
             reply_markup=main_menu()
         )
-
 @dp.callback_query(F.data.startswith("info_"))
 async def show_task_info(callback: CallbackQuery):
     task_id = int(callback.data.split('_')[1])
