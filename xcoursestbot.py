@@ -1174,7 +1174,7 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
 ### 3. Единый обработчик отправки решений ###
 async def notify_admin(submission_id: int):
     try:
-        with db.cursor() as cursor:  # Синхронный контекст
+        with db.cursor() as cursor:
             cursor.execute('''
                 SELECT s.file_id, s.file_type, s.content,
                        u.full_name, t.title, s.user_id
@@ -1191,39 +1191,38 @@ async def notify_admin(submission_id: int):
             text = f"📬 Новое решение #{submission_id}\n👤 Студент: {full_name}\n📚 Задание: {title}"
 
             kb = InlineKeyboardBuilder()
-            # Добавляем user_id в callback_data
             kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}_{student_id}")
             kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}_{student_id}")
             kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_id}")
             kb.adjust(2, 1)
 
-            # Отправка медиа или текста
+            # Исправлено admin_id -> ADMIN_ID
             try:
                 if file_id and file_type:
                     if file_type == 'photo':
                         await bot.send_photo(
-                            chat_id=admin_id,
+                            chat_id=ADMIN_ID,  # <-- исправлено здесь
                             photo=file_id,
                             caption=text[:1024],
                             reply_markup=kb.as_markup()
                         )
                     else:
                         await bot.send_document(
-                            chat_id=admin_id,
+                            chat_id=ADMIN_ID,  # <-- исправлено здесь
                             document=file_id,
                             caption=text[:1024],
                             reply_markup=kb.as_markup()
                         )
                 else:
                     await bot.send_message(
-                        chat_id=admin_id,
+                        chat_id=ADMIN_ID,  # <-- исправлено здесь
                         text=text,
                         reply_markup=kb.as_markup()
                     )
             except Exception as e:
                 logger.error("Notification sending failed: %s", e)
                 await bot.send_message(
-                    admin_id,
+                    ADMIN_ID,  # <-- исправлено здесь
                     f"🚨 Не удалось отправить заявку!\nError: {str(e)[:200]}"
                 )
 
