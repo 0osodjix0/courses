@@ -504,9 +504,22 @@ async def process_solution(message: Message, state: FSMContext):
             file_type = 'photo'
             file_id = message.photo[-1].file_id
 
+        submission_id = None  # Инициализируем переменную
+
         # Сохранение в БД
         with db.cursor() as cursor:
             if is_retry:
+                # Получаем ID последней отправки
+                cursor.execute('''
+                    SELECT submission_id 
+                    FROM submissions 
+                    WHERE user_id = %s AND task_id = %s 
+                    ORDER BY submitted_at DESC 
+                    LIMIT 1
+                ''', (message.from_user.id, task_id))
+                submission_id = cursor.fetchone()[0]
+
+                # Обновляем существующую запись
                 cursor.execute('''
                     UPDATE submissions SET
                     content = COALESCE(%s, content),
@@ -514,23 +527,20 @@ async def process_solution(message: Message, state: FSMContext):
                     file_type = COALESCE(%s, file_type),
                     status = 'pending',
                     submitted_at = NOW()
-                    WHERE submission_id = (
-                        SELECT submission_id FROM submissions 
-                        WHERE user_id = %s AND task_id = %s 
-                        ORDER BY submitted_at DESC LIMIT 1
-                    )
+                    WHERE submission_id = %s
                 ''', (
                     message.text or None,
                     file_id,
                     file_type,
-                    message.from_user.id,
-                    task_id
+                    submission_id
                 ))
             else:
+                # Создаем новую запись
                 cursor.execute('''
                     INSERT INTO submissions 
                     (user_id, task_id, content, file_id, file_type)
                     VALUES (%s, %s, %s, %s, %s)
+                    RETURNING submission_id
                 ''', (
                     message.from_user.id,
                     task_id,
@@ -538,8 +548,9 @@ async def process_solution(message: Message, state: FSMContext):
                     file_id,
                     file_type
                 ))
+                submission_id = cursor.fetchone()[0]
 
-        # Уведомление админа
+        # Уведомление админа (теперь submission_id всегда определен)
         await notify_admin(submission_id)
         
         # Удаление клавиатуры
@@ -548,7 +559,7 @@ async def process_solution(message: Message, state: FSMContext):
             reply_markup=ReplyKeyboardRemove()
         )
         
-        # Показ списка заданий модуля с обновленным статусом
+        # Показ списка заданий модуля
         await show_module_tasks(message, module_id, message.from_user.id)
 
     except Exception as e:
