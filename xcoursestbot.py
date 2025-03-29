@@ -2,6 +2,7 @@ import os
 import logging
 import random
 import psycopg2
+from collections import namedtuple
 from dotenv import load_dotenv
 from typing import Optional
 from psycopg2 import OperationalError, IntegrityError
@@ -575,32 +576,18 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
     """Показывает задания модуля с учетом статуса решений"""
     try:
         with db.cursor() as cursor:
-            # Получаем информацию о модуле и курсе
+            # Получаем всю необходимую информацию за один запрос
             cursor.execute('''
                 SELECT 
-                    m.title, 
-                    c.title, 
+                    m.title AS module_title,
+                    c.title AS course_title,
                     m.course_id,
-                    c.course_id
+                    t.task_id,
+                    t.title AS task_title,
+                    COALESCE(s.status, 'not_started') AS status
                 FROM modules m
                 JOIN courses c ON m.course_id = c.course_id
-                WHERE m.module_id = %s
-            ''', (module_id,))
-            module_data = cursor.fetchone()
-            
-            if not module_data:
-                await message.answer("❌ Модуль не найден")
-                return
-
-            module_title, course_title, course_id = module_data
-
-            # Получаем задания со статусами
-            cursor.execute('''
-                SELECT 
-                    t.task_id,
-                    t.title,
-                    COALESCE(s.status, 'not_started') as status
-                FROM tasks t
+                JOIN tasks t ON m.module_id = t.module_id
                 LEFT JOIN LATERAL (
                     SELECT status 
                     FROM submissions 
@@ -609,42 +596,52 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
                     ORDER BY submitted_at DESC 
                     LIMIT 1
                 ) s ON true
-                WHERE t.module_id = %s
+                WHERE m.module_id = %s
                 ORDER BY t.task_id
             ''', (user_id, module_id))
-            tasks = cursor.fetchall()
+            
+            results = cursor.fetchall()
+            
+            if not results:
+                await message.answer("❌ Модуль не найден")
+                return
+
+            # Извлекаем общую информацию из первой строки
+            first_row = results[0]
+            module_title = first_row[0]
+            course_title = first_row[1]
+            course_id = first_row[2]
 
         # Строим клавиатуру
         builder = InlineKeyboardBuilder()
         
-        for task in tasks:
-            task_id, title, status = task
+        for row in results:
+            _, _, _, task_id, task_title, status = row
             
-            # Формируем текст кнопки
+            # Формируем текст и callback_data для кнопки
             status_icons = {
-                'accepted': '✅ ',
-                'rejected': '❌ ',
-                'pending': '⏳ ',
-                'not_started': '📝 '
+                'accepted': '✅',
+                'rejected': '❌',
+                'pending': '⏳',
+                'not_started': '📝'
             }
-            btn_text = f"{status_icons.get(status, '📝')}{title}"
+            icon = status_icons.get(status, '📝')
             
-            # Для выполненных заданий
             if status == 'accepted':
                 builder.button(
-                    text=btn_text,
-                    callback_data=f"completed_task_{task_id}"
+                    text=f"{icon} {task_title} (Завершено)",
+                    callback_data=f"completed_{task_id}"
                 )
-            # Для других статусов
             else:
                 builder.button(
-                    text=btn_text,
+                    text=f"{icon} {task_title}",
                     callback_data=f"task_{task_id}"
                 )
-                # Кнопка исправления для отклоненных
+                
+                # Добавляем кнопку исправления для отклоненных
                 if status == 'rejected':
                     builder.button(
-                        text=f"🔄 Исправить",
+                        text=f"🔄 Исправить {task_title}",
                         callback_data=f"retry_{task_id}"
                     )
 
@@ -659,7 +656,7 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
         )
         
         # Настройка расположения кнопок
-        builder.adjust(1, 2, 2)  # 1 колонка для заданий, 2 для исправлений, 2 для навигации
+        builder.adjust(1, 2, 2)
 
         # Отправка сообщения
         await message.answer(
@@ -672,11 +669,27 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
         )
 
     except Exception as e:
-        logger.error(f"Module tasks error: {str(e)}")
+        logger.error(f"Module tasks error: {str(e)}", exc_info=True)
         await message.answer(
-            "❌ Ошибка загрузки заданий",
+            "❌ Ошибка при загрузке заданий",
             reply_markup=main_menu()
         )
+
+@dp.callback_query(F.data.startswith("completed_"))
+async def handle_completed_task(callback: CallbackQuery):
+    task_id = callback.data.split("_")[1]
+    await callback.answer(
+        "Это задание уже успешно выполнено!",
+        show_alert=True
+    )
+
+@dp.callback_query(F.data == "main_menu")
+async def main_menu_handler(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Главное меню:",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
 
 # Новый обработчик для выполненных заданий
 @dp.callback_query(F.data.startswith("completed_task_"))
