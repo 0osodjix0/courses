@@ -55,9 +55,6 @@ class CleanupMiddleware(BaseMiddleware):
                 await state.clear()
         return await handler(event, data)
 
-# Регистрация middleware
-dp.message.middleware(CleanupMiddleware())
-
 class Database:
     def __init__(self):
         self.conn = None
@@ -180,6 +177,8 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)  # Передаем bot явно
 db = Database()
+
+dp.message.middleware(CleanupMiddleware())
 
 class Form(StatesGroup):
     full_name = State()
