@@ -955,40 +955,75 @@ async def handle_task_selection(callback: types.CallbackQuery, state: FSMContext
         task_id = int(callback.data.split('_')[1])
         user_id = callback.from_user.id
         
+        # Получаем данные задания из БД
         with db.cursor() as cursor:
+            # Запрос данных задания и статуса
             cursor.execute('''
-                SELECT status 
-                FROM submissions 
-                WHERE user_id = %s AND task_id = %s 
-                ORDER BY submitted_at DESC 
-                LIMIT 1
+                SELECT 
+                    t.module_id,
+                    t.title,
+                    t.content,
+                    t.file_id,
+                    t.file_type,
+                    m.course_id,
+                    s.status
+                FROM tasks t
+                JOIN modules m ON t.module_id = m.module_id
+                LEFT JOIN (
+                    SELECT task_id, status 
+                    FROM submissions 
+                    WHERE user_id = %s 
+                    ORDER BY submitted_at DESC 
+                    LIMIT 1
+                ) s ON t.task_id = s.task_id
+                WHERE t.task_id = %s
             ''', (user_id, task_id))
-            status = cursor.fetchone()[0] if cursor.rowcount > 0 else None
+            
+            task_data = cursor.fetchone()
 
+        # Проверяем наличие задания
+        if not task_data:
+            await callback.answer("❌ Задание не найдено", show_alert=True)
+            return
+
+        # Распаковываем данные
+        (module_id, title, content, 
+         file_id, file_type, 
+         course_id, status) = task_data
+
+        # Проверяем статус задания
         if status == 'accepted':
             await callback.answer("✅ Задание уже выполнено!", show_alert=True)
             return
 
-        if not tsk_data:
-            await callback.answer("❌ Задание не найдено", show_alert=True)
-            return
+        # Сохраняем данные в состоянии
+        await state.update_data(
+            current_module=module_id,
+            task_id=task_id
+        )
 
-        module_id, title, content, file_id, file_type, course_id = tsk_data
-        
-        # Сохраняем текущий модуль
-        await state.update_data(current_module=module_id)
-
-        # Inline клавиатура для действий с заданием
+        # Создаем клавиатуру
         inline_builder = InlineKeyboardBuilder()
-        inline_builder.button(text="✏️ Отправить решение", callback_data=f"submit_{task_id}")
-        inline_builder.adjust(2)
+        if status != 'accepted':
+            inline_builder.button(
+                text="✏️ Отправить решение" if status != 'rejected' else "🔄 Исправить",
+                callback_data=f"submit_{task_id}"
+            )
+        inline_builder.button(
+            text="🔙 Назад к заданиям",
+            callback_data=f"module_{module_id}"
+        )
+        inline_builder.adjust(1)
 
-        # Удаляем предыдущее сообщение
-        await callback.message.delete()
-
-        # Отправка контента с правильным типом медиа
+        # Удаляем предыдущее сообщение с обработкой ошибок
         try:
-            if file_id:
+            await callback.message.delete()
+        except Exception as delete_error:
+            logger.error(f"Ошибка удаления сообщения: {delete_error}")
+
+        # Отправка контента
+        try:
+            if file_id and file_type:
                 if file_type == 'photo':
                     await callback.message.answer_photo(
                         file_id,
@@ -1011,28 +1046,18 @@ async def handle_task_selection(callback: types.CallbackQuery, state: FSMContext
                     f"📌 {title}\n\n{content}",
                     reply_markup=inline_builder.as_markup()
                 )
+                
         except Exception as media_error:
-            logger.error(f"Ошибка отправки медиа: {str(media_error)}")
+            logger.error(f"Ошибка отправки медиа: {media_error}")
             await callback.message.answer(
-                f"📌 {title}\n\n{content}\n\n⚠️ Ошибка загрузки вложения",
+                "❌ Не удалось загрузить задание",
                 reply_markup=inline_builder.as_markup()
             )
 
-        # Отдельное сообщение с reply-клавиатурой
-        reply_kb = ReplyKeyboardBuilder()
-        reply_kb.button(text="📋 Назад к заданиям")
-        await callback.message.answer(
-            "Выберите действие:",
-            reply_markup=reply_kb.as_markup(
-                resize_keyboard=True,
-                one_time_keyboard=True
-            )
-        )
-
     except Exception as e:
-        logger.error(f"Task selection error: {str(e)}")
+        logger.error(f"Ошибка выбора задания: {e}", exc_info=True)
         await callback.answer("❌ Ошибка загрузки задания")
-
+        
 @dp.callback_query(F.data.startswith("task_completed_"))
 async def handle_completed_task(callback: types.CallbackQuery):
     task_id = int(callback.data.split('_')[2])
