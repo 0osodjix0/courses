@@ -68,21 +68,25 @@ class Database:
         
     def _connect(self):
         """Установка соединения с PostgreSQL"""
-        self.conn = psycopg2.connect(
-            dbname=parsed_db.path[1:],
-            user=parsed_db.username,
-            password=parsed_db.password,
-            host=parsed_db.hostname,
-            port=parsed_db.port,
-            sslmode='require'
-        )
-        self.conn.autocommit = False
+        try:
+            self.conn = psycopg2.connect(
+                dbname=parsed_db.path[1:],
+                user=parsed_db.username,
+                password=parsed_db.password,
+                host=parsed_db.hostname,
+                port=parsed_db.port,
+                sslmode='require'
+            )
+            self.conn.autocommit = False
+        except OperationalError as e:
+            logger.critical(f"Ошибка подключения к базе данных: {e}")
+            raise
 
     def _init_tables(self):
-        """Инициализация таблиц в PostgreSQL (без удаления существующих данных)"""
-        with self.conn.cursor() as cursor:
-            try:
-                # Создаем таблицы, если они не существуют
+        """Инициализация таблиц в PostgreSQL"""
+        try:
+            with self.conn.cursor() as cursor:
+                # Создание таблиц
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -129,23 +133,27 @@ class Database:
                         content TEXT
                     )''')
 
-                # Безопасное добавление новых колонок к существующим таблицам
-                cursor.execute('''
-                    ALTER TABLE tasks 
-                    ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
-                ''')
-
-                cursor.execute('''
-                    ALTER TABLE submissions 
-                    ADD COLUMN IF NOT EXISTS file_type VARCHAR(10)
-                ''')
+                # Добавление недостающих колонок
+                self._safe_add_column(cursor, 'tasks', 'file_type', 'VARCHAR(10)')
+                self._safe_add_column(cursor, 'submissions', 'file_type', 'VARCHAR(10)')
 
                 self.conn.commit()
                 
-            except Exception as e:
-                self.conn.rollback()
-                logger.error(f"Ошибка инициализации таблиц: {e}")
-                raise
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Ошибка инициализации таблиц: {e}")
+            raise
+
+    def _safe_add_column(self, cursor, table, column, col_type):
+        """Безопасное добавление колонки если не существует"""
+        try:
+            cursor.execute(
+                f"ALTER TABLE {table} "
+                f"ADD COLUMN IF NOT EXISTS {column} {col_type}"
+            )
+        except Exception as e:
+            logger.warning(f"Ошибка добавления колонки {column}: {e}")
+            self.conn.rollback()
 
     @contextmanager
     def cursor(self):
@@ -167,6 +175,7 @@ class Database:
         """Закрытие соединения с базой данных"""
         if self.conn and not self.conn.closed:
             self.conn.close()
+            logger.info("Соединение с базой данных закрыто")
 
 # Инициализация объектов
 bot = Bot(token=TOKEN)
@@ -1047,75 +1056,54 @@ async def back_to_module_handler(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("module_"))
 async def handle_module_selection(callback: types.CallbackQuery):
     try:
-        # Извлекаем ID модуля из callback данных
         module_id = int(callback.data.split('_')[1])
         
-        # Асинхронное подключение к базе данных
-        async with db.cursor() as cursor:
-            # Получаем информацию о модуле
-            await cursor.execute('''
+        with db.cursor() as cursor:  # Используем синхронный контекст
+            cursor.execute('''
                 SELECT m.title, m.course_id, c.title 
                 FROM modules m
                 JOIN courses c ON m.course_id = c.course_id
                 WHERE m.module_id = %s
             ''', (module_id,))
-            
-            module_data = await cursor.fetchone()
+            module_data = cursor.fetchone()
 
             if not module_data:
                 await callback.answer("❌ Модуль не найден")
                 return
 
-            # Распаковываем данные
             module_title, course_id, course_title = module_data
 
-            # Получаем задания модуля
-            await cursor.execute(
+            cursor.execute(
                 "SELECT task_id, title FROM tasks WHERE module_id = %s",
                 (module_id,)
             )
-            tasks = await cursor.fetchall()
+            tasks = cursor.fetchall()
 
-        # Строим интерактивную клавиатуру
         builder = InlineKeyboardBuilder()
         
         if tasks:
-            # Добавляем кнопки для каждого задания
             for task_id, title in tasks:
                 builder.button(
                     text=f"📝 {title}",
                     callback_data=f"task_{task_id}"
                 )
             
-            # Кнопка возврата к списку модулей
             builder.button(
                 text="🔙 К модулям курса", 
                 callback_data=f"course_{course_id}"
             )
             builder.adjust(1)
             
-            # Редактируем сообщение с новой клавиатурой
             await callback.message.edit_text(
-                f"📚 Курс: {course_title}\n"
-                f"📦 Модуль: {module_title}\n\n"
-                "Выберите задание:",
+                f"📚 Курс: {course_title}\n📦 Модуль: {module_title}\n\nВыберите задание:",
                 reply_markup=builder.as_markup()
             )
         else:
             await callback.answer("ℹ️ В этом модуле пока нет заданий")
 
-    except (IndexError, ValueError) as e:
-        # Обработка ошибок формата данных
-        logger.error(f"Ошибка формата данных: {e}")
-        await callback.answer("❌ Некорректный идентификатор модуля")
     except Exception as e:
-        # Общая обработка ошибок
         logger.error(f"Ошибка обработки модуля: {e}")
         await callback.answer("❌ Ошибка загрузки модуля")
-        await callback.message.answer(
-            "⚠️ Произошла ошибка. Попробуйте позже.",
-            reply_markup=main_menu()
-        )
         
         # Обработчик списка всех курсов
 @dp.callback_query(F.data == "all_courses")
@@ -1186,7 +1174,7 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
 ### 3. Единый обработчик отправки решений ###
 async def notify_admin(submission_id: int):
     try:
-        with db.cursor() as cursor:
+        with db.cursor() as cursor:  # Синхронный контекст
             cursor.execute('''
                 SELECT s.file_id, s.file_type, s.content,
                        u.full_name, t.title, s.user_id
