@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-dp = Dispatcher(storage=storage)  
+dp = Dispatcher(bot=bot, storage=storage)
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -1266,7 +1266,8 @@ async def handle_submission_review(callback: types.CallbackQuery):
             cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
             task_title = cursor.fetchone()[0]
 
-        await dp.bot.send_message(
+        # Используем глобальный объект bot
+        await bot.send_message(
             student_id,
             f"📢 Ваше решение по заданию «{task_title}» {new_status}"
         )
@@ -1276,10 +1277,6 @@ async def handle_submission_review(callback: types.CallbackQuery):
     except Exception as e:
         logger.error("Ошибка проверки задания: %s", e)
         await callback.answer("❌ Ошибка обновления статуса")
-
-    except (ValueError, IndexError) as e:
-        logger.error(f"Ошибка данных: {str(e)} | Data: {callback.data}")
-        await callback.answer("❌ Ошибка обработки запроса", show_alert=True)
         
     except psycopg2.Error as e:
         logger.error(f"Ошибка БД: {str(e)}")
