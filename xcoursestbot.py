@@ -427,44 +427,72 @@ async def back_to_main_menu(callback: CallbackQuery):
 async def handle_submit_solution(callback: types.CallbackQuery, state: FSMContext):
     try:
         task_id = int(callback.data.split("_")[1])
-        await state.set_state(TaskStates.waiting_for_solution)
-        await state.update_data(task_id=task_id)
         
-        # Создаем Reply-клавиатуру
+        # Получаем информацию о модуле
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT m.module_id, m.title 
+                FROM tasks t
+                JOIN modules m ON t.module_id = m.module_id
+                WHERE t.task_id = %s
+            ''', (task_id,))
+            module_data = cursor.fetchone()
+            
+        if not module_data:
+            await callback.answer("❌ Задание не найдено")
+            return
+            
+        module_id, module_title = module_data
+
+        # Сохраняем данные в состоянии
+        await state.update_data(
+            task_id=task_id,
+            module_id=module_id,
+            module_title=module_title
+        )
+        
+        # Создаем временную клавиатуру
         builder = ReplyKeyboardBuilder()
         builder.button(text="❌ Отмена")
         
+        # Удаляем предыдущее сообщение
+        await callback.message.delete()
+        
+        # Отправляем запрос на решение
         await callback.message.answer(
-            "📤 Отправьте ваше решение (текст или файл):",
+            f"📤 Отправьте решение для задания из модуля '{module_title}':\n"
+            "Можно отправить текст, фото или документ",
             reply_markup=builder.as_markup(
                 resize_keyboard=True,
                 one_time_keyboard=True
             )
         )
+        await state.set_state(TaskStates.waiting_for_solution)
         await callback.answer()
 
     except Exception as e:
         logger.error(f"Submit error: {str(e)}")
-        await callback.answer("❌ Ошибка отправки решения")
+        await callback.answer("❌ Ошибка начала отправки решения")
 
 @dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
 async def process_solution(message: Message, state: FSMContext):
     data = await state.get_data()
     task_id = data.get('task_id')
+    module_id = data.get('module_id')
     
     try:
-        # Определяем тип файла
+        # Обработка файла
         file_type = None
+        file_id = None
+        
         if message.document:
             file_type = 'document'
             file_id = message.document.file_id
         elif message.photo:
             file_type = 'photo'
             file_id = message.photo[-1].file_id
-        else:
-            file_id = None
 
-        # Сохраняем в базу
+        # Сохранение в БД
         with db.cursor() as cursor:
             cursor.execute('''
                 INSERT INTO submissions 
@@ -474,31 +502,42 @@ async def process_solution(message: Message, state: FSMContext):
             ''', (
                 message.from_user.id,
                 task_id,
-                message.text if message.text else None,
+                message.text or None,
                 file_id,
                 file_type
             ))
             submission_id = cursor.fetchone()[0]
-            db.conn.commit()
 
-        # Отправляем уведомление
+        # Уведомление админа
         await notify_admin(submission_id)
-        await message.answer("✅ Решение успешно отправлено!")
+        
+        # Удаление клавиатуры
+        await message.answer(
+            "✅ Решение успешно отправлено!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        # Показ списка заданий модуля
+        await show_module_tasks(message, module_id)
 
     except Exception as e:
-        logger.error("Solution processing error: %s", e)
-        await message.answer("❌ Ошибка при отправке решения")
+        logger.error(f"Solution processing error: {str(e)}")
+        await message.answer(
+            "❌ Ошибка при отправке решения",
+            reply_markup=ReplyKeyboardRemove()
+        )
     finally:
         await state.clear()
 
-async def show_module_after_submission(message: types.Message, module_id: int):
-    """Функция для навигации после отправки решения"""
+async def show_module_tasks(message: types.Message, module_id: int):
+    """Показывает задания модуля с клавиатурой"""
     try:
         with db.cursor() as cursor:
-            # Получаем ID курса и название модуля
+            # Получаем информацию о модуле
             cursor.execute('''
-                SELECT m.title, m.course_id 
+                SELECT m.title, c.title, m.course_id 
                 FROM modules m
+                JOIN courses c ON m.course_id = c.course_id
                 WHERE m.module_id = %s
             ''', (module_id,))
             module_data = cursor.fetchone()
@@ -507,40 +546,57 @@ async def show_module_after_submission(message: types.Message, module_id: int):
                 await message.answer("❌ Модуль не найден")
                 return
 
-            module_title, course_id = module_data
-            
-            # Получаем задания модуля
+            module_title, course_title, course_id = module_data
+
+            # Получаем задания
             cursor.execute('''
                 SELECT task_id, title 
                 FROM tasks 
-                WHERE module_id = %s
+                WHERE module_id = %s 
+                ORDER BY task_id
             ''', (module_id,))
             tasks = cursor.fetchall()
 
+        # Строим клавиатуру
         builder = InlineKeyboardBuilder()
         
-        # Кнопки заданий
-        for task_id, title in tasks:
+        if tasks:
+            for task_id, title in tasks:
+                builder.button(
+                    text=f"📝 {title}",
+                    callback_data=f"task_{task_id}"
+                )
+        else:
             builder.button(
-                text=f"📝 {title}",
-                callback_data=f"task_{task_id}"
+                text="❌ Нет заданий",
+                callback_data="no_tasks"
             )
-        
-        # Кнопка возврата к курсу с передачей course_id
-        builder.button(
-            text="🔙 Назад к курсу", 
-            callback_data=f"course_{course_id}"  # Используем числовой ID
-        )
-        builder.adjust(1)
 
+        # Кнопки навигации
+        builder.button(
+            text="🔙 К курсу", 
+            callback_data=f"course_{course_id}"
+        )
+        builder.button(
+            text="🏠 В главное меню", 
+            callback_data="main_menu"
+        )
+        builder.adjust(1, repeat=True)
+
+        # Отправка сообщения
         await message.answer(
-            f"📦 Модуль: {module_title}\nВыберите задание:",
+            f"📚 Курс: {course_title}\n"
+            f"📦 Модуль: {module_title}\n"
+            "Выберите задание:",
             reply_markup=builder.as_markup()
         )
 
     except Exception as e:
-        logger.error(f"Ошибка отображения модуля: {str(e)}")
-        await message.answer("❌ Ошибка загрузки модуля")
+        logger.error(f"Module tasks error: {str(e)}")
+        await message.answer(
+            "❌ Ошибка загрузки заданий",
+            reply_markup=main_menu()
+        )
     
 @dp.message(F.text == "🆘 Поддержка")
 async def support_handler(message: Message):
