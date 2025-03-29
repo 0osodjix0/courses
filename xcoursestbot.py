@@ -576,6 +576,7 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
     """Показывает задания модуля с учетом статуса решений"""
     try:
         with db.cursor() as cursor:
+            # SQL-запрос (должен включать task_id, task_title и статус)
             cursor.execute('''
                 SELECT 
                     m.title AS module_title,
@@ -605,67 +606,59 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
                 await message.answer("❌ Модуль не найден")
                 return
 
-            # Извлекаем общую информацию
+            # Извлекаем общую информацию о модуле и курсе
             module_title = results[0][0]
             course_title = results[0][1]
             course_id = results[0][2]
 
-            # Основные кнопки заданий
-            tasks_builder = InlineKeyboardBuilder()
+            # Создаем клавиатуру
+            builder = InlineKeyboardBuilder()
+
+            # Ваш блок начинается здесь
             for row in results:
-                *_, task_id, task_title, status = row
+                *_, task_id, task_title, last_status = row
                 
-                # Формируем кнопку задания
-                status_icon = {
-                    'accepted': '✅',
-                    'rejected': '❌', 
-                    'pending': '⏳',
-                    'not_started': '📝'
-                }.get(status, '📝')
+                # Определяем текущий статус
+                status = last_status if last_status else 'not_started'
                 
-                tasks_builder.button(
-                    text=f"{status_icon} {task_title}",
+                # Формируем элементы кнопки
+                status_info = {
+                    'accepted': {'icon': '✅', 'text': f"{task_title} (Принято)"},
+                    'rejected': {'icon': '❌', 'text': f"{task_title} (Требует правок)"},
+                    'pending': {'icon': '⏳', 'text': f"{task_title} (На проверке)"},
+                    'not_started': {'icon': '📝', 'text': task_title}
+                }.get(status, {'icon': '📝', 'text': task_title})
+                
+                # Добавляем кнопку задания
+                builder.button(
+                    text=f"{status_info['icon']} {status_info['text']}",
                     callback_data=f"task_{task_id}" if status != 'accepted' else f"completed_{task_id}"
                 )
-                
-                # Добавляем кнопку исправления для отклоненных
-                if status == 'rejected':
-                    tasks_builder.button(
-                        text=f"🔄 Исправить",
-                        callback_data=f"retry_{task_id}"
-                    )
+            # Ваш блок заканчивается здесь
 
-            # Навигационные кнопки (всегда последними)
+            # Навигационные кнопки
             nav_builder = InlineKeyboardBuilder()
-            nav_builder.button(
-                text="🔙 К курсу", 
-                callback_data=f"course_{course_id}"
-            )
-            nav_builder.button(
-                text="🏠 В главное меню", 
-                callback_data="main_menu"
-            )
+            nav_builder.button(text="🔙 К курсу", callback_data=f"course_{course_id}")
+            nav_builder.button(text="🏠 В главное меню", callback_data="main_menu")
+            nav_builder.adjust(2)
 
             # Комбинируем клавиатуры
-            tasks_builder.attach(nav_builder)
-        
-            tasks_builder.adjust(1, 2, 2)
+            builder.attach(nav_builder)
+            builder.adjust(1, 2, 2)  # Настройка расположения
 
+            # Отправляем сообщение
             await message.answer(
                 f"📚 Курс: {course_title}\n"
                 f"📦 Модуль: {module_title}\n\n"
                 "Статус заданий:\n"
-                "✅ - принято\n❌ - отклонено\n⏳ - на проверке\n📝 - не начато\n\n"
-                "Выберите задание:",
-                reply_markup=tasks_builder.as_markup()
+                "✅ - принято\n❌ - отклонено\n⏳ - на проверке\n📝 - не начато",
+                reply_markup=builder.as_markup()
             )
 
     except Exception as e:
-        logger.error(f"Module tasks error: {str(e)}", exc_info=True)
-        await message.answer(
-            "❌ Ошибка при загрузке заданий",
-            reply_markup=main_menu()
-        )
+        logger.error(f"Ошибка: {str(e)}")
+        await message.answer("❌ Не удалось загрузить задания")
+        
 @dp.callback_query(F.data.startswith("info_"))
 async def show_task_info(callback: CallbackQuery):
     task_id = int(callback.data.split('_')[1])
@@ -676,12 +669,14 @@ async def show_task_info(callback: CallbackQuery):
     )
     
 @dp.callback_query(F.data.startswith("completed_"))
-async def handle_completed_task(callback: CallbackQuery):
+async def handle_completed_task(callback: types.CallbackQuery):
     task_id = callback.data.split("_")[1]
     await callback.answer(
-        "Это задание уже успешно выполнено!",
+        "✅ Это задание уже успешно выполнено!\n"
+        "Вы можете переходить к следующим заданиям.",
         show_alert=True
     )
+    await callback.message.delete()
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_handler(callback: CallbackQuery):
@@ -1462,33 +1457,20 @@ async def cancel_solution(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_review(callback: CallbackQuery):
-    action, submission_id, student_id = callback.data.split('_')
-    new_status = 'accepted' if action == 'accept' else 'rejected'
-
-    with db.cursor() as cursor:
-        cursor.execute('''
-            UPDATE submissions
-            SET status = %s
-            WHERE submission_id = %s
-        ''', (new_status, submission_id))
-    
-    await bot.send_message(
-        student_id,
-        f"Статус вашего решения обновлен: {new_status}"
-    )
-    await callback.message.delete()
+    """Обработчик принятия/отклонения решений администратором"""
     try:
+        # Проверка и разбор данных
         data = callback.data.split('_')
         if len(data) != 3:
-            raise ValueError(f"Некорректные данные: {callback.data}")
-            
-        action, submission_id_str, user_id_str = data
-        
+            raise ValueError(f"Некорректный формат данных: {callback.data}")
+
+        action, submission_id_str, student_id_str = data
         submission_id = int(submission_id_str)
-        student_id = int(user_id_str)
+        student_id = int(student_id_str)
         new_status = "accepted" if action == "accept" else "rejected"
 
         with db.cursor() as cursor:
+            # Обновление статуса и получение информации о задании
             cursor.execute('''
                 UPDATE submissions 
                 SET status = %s 
@@ -1497,49 +1479,57 @@ async def handle_review(callback: CallbackQuery):
             ''', (new_status, submission_id))
             
             task_id = cursor.fetchone()[0]
-            cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
+            
+            # Получаем название задания
+            cursor.execute('''
+                SELECT title FROM tasks WHERE task_id = %s
+            ''', (task_id,))
             task_title = cursor.fetchone()[0]
 
-        # Используем глобальный объект bot
+        # Уведомление студента
         await bot.send_message(
             student_id,
             f"📢 Ваше решение по заданию «{task_title}» {new_status}"
         )
-        await callback.message.delete()
-        await callback.answer(f"Статус обновлен: {new_status}")
 
-    except Exception as e:
-        logger.error("Ошибка проверки задания: %s", e)
-        await callback.answer("❌ Ошибка обновления статуса")
-        
+        # Удаление сообщения администратора
+        await callback.message.delete()
+        await callback.answer(f"✅ Статус обновлен: {new_status}")
+
+    except ValueError as e:
+        logger.error(f"Ошибка формата данных: {str(e)}")
+        await callback.answer("❌ Некорректный запрос", show_alert=True)
+
     except psycopg2.Error as e:
-        logger.error(f"Ошибка БД: {str(e)}")
-        await callback.answer("⚠️ Ошибка базы данных", show_alert=True)
+        logger.error(f"Ошибка базы данных: {str(e)}")
         db.conn.rollback()
-        
+        await callback.answer("⚠️ Ошибка базы данных", show_alert=True)
+
     except Exception as e:
         logger.error(f"Критическая ошибка: {str(e)}", exc_info=True)
         await callback.answer("⚠️ Системная ошибка", show_alert=True)
-        
+
 def main_menu() -> types.ReplyKeyboardMarkup:
+    """Клавиатура главного меню для пользователей"""
     builder = ReplyKeyboardBuilder()
+    buttons = [
+        ("📚 Выбрать курс", None),
+        ("🆘 Поддержка", None)
+    ]
     
-    # Добавляем кнопки без callback_data
-    builder.button(text="📚 Выбрать курс")
-    builder.button(text="🆘 Поддержка")
+    for text, _ in buttons:
+        builder.button(text=text)
     
-    # Настройка расположения (2 кнопки в ряд)
     builder.adjust(2)
-    
     return builder.as_markup(
         resize_keyboard=True,
         one_time_keyboard=False
     )
 
 def admin_menu() -> types.ReplyKeyboardMarkup:
+    """Клавиатура админ-панели"""
     builder = ReplyKeyboardBuilder()
-    
-    admin_buttons = [
+    buttons = [
         "📊 Статистика",
         "📝 Добавить курс",
         "🗑 Удалить курс",
@@ -1549,14 +1539,10 @@ def admin_menu() -> types.ReplyKeyboardMarkup:
         "🔙 Назад"
     ]
     
-    # Добавляем все кнопки
-    for button_text in admin_buttons:
-        builder.button(text=button_text)
+    for text in buttons:
+        builder.button(text=text)
     
-    # Настройка расположения:
-    # Первые 2 ряда по 2 кнопки, затем 2 кнопки, затем 1
     builder.adjust(2, 2, 2, 1)
-    
     return builder.as_markup(
         resize_keyboard=True,
         one_time_keyboard=False
