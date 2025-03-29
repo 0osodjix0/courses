@@ -575,79 +575,98 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
     """Показывает задания модуля с учетом статуса решений"""
     try:
         with db.cursor() as cursor:
-            # Получаем информацию о модуле и решениях
+            # Получаем информацию о модуле и курсе
             cursor.execute('''
                 SELECT 
                     m.title, 
                     c.title, 
                     m.course_id,
-                    t.task_id,
-                    t.title,
-                    s.status
+                    c.course_id
                 FROM modules m
                 JOIN courses c ON m.course_id = c.course_id
-                JOIN tasks t ON m.module_id = t.module_id
-                LEFT JOIN (
-                    SELECT DISTINCT ON (task_id) *
-                    FROM submissions
-                    WHERE user_id = %s
-                    ORDER BY task_id, submitted_at DESC
-                ) s ON t.task_id = s.task_id
                 WHERE m.module_id = %s
-                ORDER BY t.task_id
-            ''', (user_id, module_id))
+            ''', (module_id,))
+            module_data = cursor.fetchone()
             
-            results = cursor.fetchall()
-            
-            if not results:
+            if not module_data:
                 await message.answer("❌ Модуль не найден")
                 return
 
-            module_title = results[0][0]
-            course_title = results[0][1]
-            course_id = results[0][2]
+            module_title, course_title, course_id = module_data
+
+            # Получаем задания со статусами
+            cursor.execute('''
+                SELECT 
+                    t.task_id,
+                    t.title,
+                    COALESCE(s.status, 'not_started') as status
+                FROM tasks t
+                LEFT JOIN LATERAL (
+                    SELECT status 
+                    FROM submissions 
+                    WHERE user_id = %s 
+                    AND task_id = t.task_id 
+                    ORDER BY submitted_at DESC 
+                    LIMIT 1
+                ) s ON true
+                WHERE t.module_id = %s
+                ORDER BY t.task_id
+            ''', (user_id, module_id))
+            tasks = cursor.fetchall()
 
         # Строим клавиатуру
         builder = InlineKeyboardBuilder()
         
-        for task in results:
-            task_id = task[3]
-            task_title = task[4]
-            status = task[5]
+        for task in tasks:
+            task_id, title, status = task
             
-            status_icon = ""
+            # Формируем текст кнопки
+            status_icons = {
+                'accepted': '✅ ',
+                'rejected': '❌ ',
+                'pending': '⏳ ',
+                'not_started': '📝 '
+            }
+            btn_text = f"{status_icons.get(status, '📝')}{title}"
+            
+            # Для выполненных заданий
             if status == 'accepted':
-                status_icon = "✅ "
-            elif status == 'rejected':
-                status_icon = "❌ "
-            elif status == 'pending':
-                status_icon = "⏳ "
-
-            builder.button(
-                text=f"{status_icon}{task_title}",
-                callback_data=f"task_{task_id}"
-            )
-            
-            # Добавляем кнопку исправления для отклоненных решений
-            if status == 'rejected':
                 builder.button(
-                    text=f"🔄 Исправить {task_title}",
-                    callback_data=f"retry_{task_id}"
+                    text=btn_text,
+                    callback_data=f"completed_task_{task_id}"
                 )
+            # Для других статусов
+            else:
+                builder.button(
+                    text=btn_text,
+                    callback_data=f"task_{task_id}"
+                )
+                # Кнопка исправления для отклоненных
+                if status == 'rejected':
+                    builder.button(
+                        text=f"🔄 Исправить",
+                        callback_data=f"retry_{task_id}"
+                    )
 
-        # Кнопки навигации
+        # Навигационные кнопки
         builder.button(
             text="🔙 К курсу", 
             callback_data=f"course_{course_id}"
         )
-        builder.adjust(1, 2, 1)
+        builder.button(
+            text="🏠 В главное меню", 
+            callback_data="main_menu"
+        )
+        
+        # Настройка расположения кнопок
+        builder.adjust(1, 2, 2)  # 1 колонка для заданий, 2 для исправлений, 2 для навигации
 
         # Отправка сообщения
         await message.answer(
             f"📚 Курс: {course_title}\n"
-            f"📦 Модуль: {module_title}\n"
+            f"📦 Модуль: {module_title}\n\n"
             "Статус заданий:\n"
-            "✅ - принято\n❌ - отклонено\n⏳ - на проверке\n\n"
+            "✅ - принято\n❌ - отклонено\n⏳ - на проверке\n📝 - не начато\n\n"
             "Выберите задание:",
             reply_markup=builder.as_markup()
         )
@@ -658,6 +677,16 @@ async def show_module_tasks(message: types.Message, module_id: int, user_id: int
             "❌ Ошибка загрузки заданий",
             reply_markup=main_menu()
         )
+
+# Новый обработчик для выполненных заданий
+@dp.callback_query(F.data.startswith("completed_task_"))
+async def handle_completed_task(callback: CallbackQuery):
+    task_id = int(callback.data.split('_')[2])
+    await callback.answer(
+        "✅ Это задание уже успешно выполнено!\n"
+        "Переходите к следующим заданиям.",
+        show_alert=True
+    )
 
 @dp.callback_query(F.data.startswith("retry_"))
 async def handle_retry_solution(callback: types.CallbackQuery):
@@ -921,19 +950,24 @@ async def modules_keyboard(course_id: int) -> types.InlineKeyboardMarkup:
 
 # Блок показа конкретного задания
 @dp.callback_query(F.data.startswith("task_"))
-async def show_single_task(callback: CallbackQuery, state: FSMContext):
+async def handle_task_selection(callback: types.CallbackQuery, state: FSMContext):
     try:
-        task_id = int(callback.data.split("_")[1])
+        task_id = int(callback.data.split('_')[1])
+        user_id = callback.from_user.id
         
         with db.cursor() as cursor:
             cursor.execute('''
-                SELECT t.module_id, t.title, t.content, 
-                       t.file_id, t.file_type, m.course_id
-                FROM tasks t
-                JOIN modules m ON t.module_id = m.module_id
-                WHERE t.task_id = %s
-            ''', (task_id,))
-            tsk_data = cursor.fetchone()
+                SELECT status 
+                FROM submissions 
+                WHERE user_id = %s AND task_id = %s 
+                ORDER BY submitted_at DESC 
+                LIMIT 1
+            ''', (user_id, task_id))
+            status = cursor.fetchone()[0] if cursor.rowcount > 0 else None
+
+        if status == 'accepted':
+            await callback.answer("✅ Задание уже выполнено!", show_alert=True)
+            return
 
         if not tsk_data:
             await callback.answer("❌ Задание не найдено", show_alert=True)
@@ -996,8 +1030,17 @@ async def show_single_task(callback: CallbackQuery, state: FSMContext):
         )
 
     except Exception as e:
-        logger.error(f"Ошибка показа задания: {str(e)}")
-        await callback.answer("❌ Ошибка загрузки задания", show_alert=True)
+        logger.error(f"Task selection error: {str(e)}")
+        await callback.answer("❌ Ошибка загрузки задания")
+
+@dp.callback_query(F.data.startswith("task_completed_"))
+async def handle_completed_task(callback: types.CallbackQuery):
+    task_id = int(callback.data.split('_')[2])
+    await callback.answer(
+        "✅ Это задание уже выполнено!\n"
+        "Переходите к следующему заданию.",
+        show_alert=True
+    )
 
 @dp.message(F.text == "📋 Назад к заданиям")
 async def back_to_tasks(message: Message, state: FSMContext):
