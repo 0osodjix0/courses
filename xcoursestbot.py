@@ -2,6 +2,12 @@ import os
 import logging
 import random
 import psycopg2
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate
+from aiogram.types import BufferedInputFile
 from collections import namedtuple
 from dotenv import load_dotenv
 from typing import Optional
@@ -90,6 +96,17 @@ class Database:
                         current_course INTEGER,
                         registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''')
+                
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS final_tasks (
+                        final_task_id SERIAL PRIMARY KEY,
+                        course_id INTEGER NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        file_id TEXT,
+                        file_type VARCHAR(10)
+                    )''')
+
 
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS courses (
@@ -196,6 +213,11 @@ class AdminForm(StatesGroup):
     add_task_content = State()
     add_task_media = State()
     delete_course = State()
+    add_final_task_title = State()
+    add_final_task_content = State()
+    add_final_task_media = State()
+    review_final_task = State()
+
 
 class TaskStates(StatesGroup):
     waiting_for_solution = State()
@@ -814,6 +836,35 @@ async def show_courses(message: types.Message):
 # Обработчик выбора курса@dp.callback_query(F.data.startswith("course_"))
 async def select_course(callback: types.CallbackQuery):
     try:
+        # Формирование клавиатуры
+        kb = modules_kb(course_id)
+        
+        # Добавляем кнопку итогового задания
+        with db.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM final_tasks WHERE course_id = %s", (course_id,))
+            if cursor.fetchone():
+                builder = InlineKeyboardBuilder()
+                builder.button(
+                    text="🎓 Итоговое задание", 
+                    callback_data=f"final_task_{course_id}"
+                )
+                # Добавляем к существующей клавиатуре
+                kb.inline_keyboard.extend(builder.export())
+
+        # Отправка сообщения с обновленной клавиатурой
+        if media_id:
+            await callback.message.delete()
+            await callback.message.answer_photo(
+                media_id,
+                caption=response_text,
+                reply_markup=kb
+            )
+        else:
+            await callback.message.edit_text(
+                text=response_text,
+                reply_markup=kb
+            )
+
         # Разбираем callback_data с защитой от переполнения
         _, *rest = callback.data.split('_', maxsplit=1)
         if not rest:
@@ -1391,7 +1442,8 @@ async def notify_admin(submission_id: int):
         with db.cursor() as cursor:
             cursor.execute('''
                 SELECT s.file_id, s.file_type, s.content,
-                       u.full_name, t.title, s.user_id
+                       u.full_name, t.title, s.user_id,
+                       t.content as task_content  # Добавляем текст задания
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
@@ -1401,8 +1453,12 @@ async def notify_admin(submission_id: int):
             
             if not data: return
 
-            file_id, file_type, content, full_name, title, student_id = data
-            text = f"📬 Новое решение #{submission_id}\n👤 Студент: {full_name}\n📚 Задание: {title}"
+            file_id, file_type, content, full_name, title, student_id, task_content = data
+            text = (f"📬 Новое решение #{submission_id}\n"
+                    f"👤 Студент: {full_name}\n"
+                    f"📚 Задание: {title}\n"
+                    f"📝 Текст задания:\n{task_content}\n\n"
+                    f"✏️ Решение студента:\n{content or 'Приложен файл'}")
 
             kb = InlineKeyboardBuilder()
             kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}_{student_id}")
@@ -1534,6 +1590,7 @@ def admin_menu() -> types.ReplyKeyboardMarkup:
         "📝 Добавить курс",
         "🗑 Удалить курс",
         "➕ Добавить модуль",
+        "🎓 Добавить итоговое задание",
         "📌 Добавить задание",
         "👥 Пользователи",
         "🔙 Назад"
@@ -2044,6 +2101,257 @@ async def process_task_media(message: Message, state: FSMContext):
     
     await message.answer("✅ Задание создано!", reply_markup=admin_menu())
     await state.clear()
+
+@dp.message(F.text == "🎓 Добавить итоговое задание")
+async def add_final_task_start(message: Message):
+    if str(message.from_user.id) != ADMIN_ID:
+        return
+    
+    builder = InlineKeyboardBuilder()
+    for course in courses_for_modules():
+        builder.button(text=course[1], callback_data=f"add_final_{course[0]}")
+    builder.button(text="❌ Отмена", callback_data="cancel")
+    
+    await message.answer("Выберите курс:", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("add_final_"))
+async def process_final_task_course(callback: CallbackQuery, state: FSMContext):
+    course_id = int(callback.data.split("_")[2])
+    await state.update_data(course_id=course_id)
+    await callback.message.answer("Введите название итогового задания:")
+    await state.set_state(AdminForm.add_final_task_title)
+
+@dp.message(AdminForm.add_final_task_title)
+async def process_final_title(message: Message, state: FSMContext):
+    await state.update_data(title=message.text)
+    await message.answer("Введите описание задания:")
+    await state.set_state(AdminForm.add_final_task_content)
+
+@dp.message(AdminForm.add_final_task_content)
+async def process_final_content(message: Message, state: FSMContext):
+    await state.update_data(content=message.text)
+    await message.answer("Отправьте файл задания или /skip")
+    await state.set_state(AdminForm.add_final_task_media)
+
+# Обработка медиа для итогового задания
+@dp.message(AdminForm.add_final_task_media)
+async def process_final_media(message: Message, state: FSMContext):
+    data = await state.get_data()
+    media = await handle_media(message)
+    
+    try:
+        with db.cursor() as cursor:
+            cursor.execute('''
+                INSERT INTO final_tasks 
+                (course_id, title, content, file_id, file_type)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (
+                data['course_id'],
+                data['title'],
+                data['content'],
+                media['file_id'] if media else None,
+                media['type'] if media else None
+            ))
+        await message.answer("✅ Итоговое задание добавлено!", reply_markup=admin_menu())
+    except Exception as e:
+        logger.error(f"Ошибка добавления итогового задания: {e}")
+        await message.answer("❌ Ошибка добавления задания")
+    
+    await state.clear()
+
+# Генерация PDF сертификата
+def generate_certificate(name: str, course: str) -> BytesIO:
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    style = ParagraphStyle(
+        name='Center',
+        parent=styles['Normal'],
+        alignment=1,
+        fontSize=20,
+        leading=24
+    )
+    
+    content = []
+    content.append(Paragraph("СЕРТИФИКАТ", style))
+    content.append(Paragraph(f"Выдан: {name}", style))
+    content.append(Paragraph(f"За успешное прохождение курса: {course}", style))
+    
+    doc.build(content)
+    buffer.seek(0)
+    return buffer
+
+# Обработчик для итогового задания у пользователя
+@dp.callback_query(F.data.startswith("final_task_"))
+async def handle_final_task(callback: CallbackQuery, state: FSMContext):
+    course_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    # Проверка выполнения всех заданий
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT COUNT(t.task_id) = COUNT(s.task_id)
+            FROM tasks t
+            LEFT JOIN modules m ON t.module_id = m.module_id
+            LEFT JOIN submissions s ON t.task_id = s.task_id 
+                AND s.user_id = %s 
+                AND s.status = 'accepted'
+            WHERE m.course_id = %s
+        ''', (user_id, course_id))
+        all_completed = cursor.fetchone()[0]
+        
+        if not all_completed:
+            await callback.answer("❌ Сначала завершите все задания курса!", show_alert=True)
+            return
+        
+        cursor.execute('''
+            SELECT title, content, file_id, file_type 
+            FROM final_tasks 
+            WHERE course_id = %s
+        ''', (course_id,))
+        final_task = cursor.fetchone()
+        
+    if not final_task:
+        await callback.answer("❌ Итоговое задание не найдено", show_alert=True)
+        return
+        
+    title, content, file_id, file_type = final_task
+    
+    # Отправка задания пользователю
+    if file_id and file_type:
+        if file_type == 'photo':
+            await callback.message.answer_photo(
+                file_id,
+                caption=f"🎓 Итоговое задание: {title}\n\n{content}"
+            )
+        else:
+            await callback.message.answer_document(
+                file_id,
+                caption=f"🎓 Итоговое задание: {title}\n\n{content}"
+            )
+    else:
+        await callback.message.answer(
+            f"🎓 Итоговое задание: {title}\n\n{content}"
+        )
+    
+    await callback.message.answer("Отправьте ваше решение:")
+    await state.set_state(TaskStates.waiting_for_final_solution)
+    await state.update_data(course_id=course_id)
+
+# Обработка решения итогового задания
+@dp.message(TaskStates.waiting_for_final_solution)
+async def process_final_solution(message: Message, state: FSMContext):
+    data = await state.get_data()
+    course_id = data['course_id']
+    user_id = message.from_user.id
+    
+    # Сохранение решения
+    file_type = None
+    file_id = None
+    content = None
+    
+    if message.document:
+        file_type = 'document'
+        file_id = message.document.file_id
+    elif message.photo:
+        file_type = 'photo'
+        file_id = message.photo[-1].file_id
+    else:
+        content = message.text
+    
+    # Отправка админу
+    with db.cursor() as cursor:
+        cursor.execute('''
+            INSERT INTO final_submissions 
+            (user_id, course_id, content, file_id, file_type)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING final_submission_id
+        ''', (user_id, course_id, content, file_id, file_type))
+        submission_id = cursor.fetchone()[0]
+    
+    # Уведомление админа
+    await notify_admin_final(submission_id)
+    await message.answer("✅ Решение отправлено на проверку!")
+    await state.clear()
+
+async def notify_admin_final(submission_id: int):
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT fs.content, fs.file_id, fs.file_type,
+                   u.full_name, c.title
+            FROM final_submissions fs
+            JOIN users u ON fs.user_id = u.user_id
+            JOIN courses c ON fs.course_id = c.course_id
+            WHERE fs.final_submission_id = %s
+        ''', (submission_id,))
+        data = cursor.fetchone()
+        
+    text = (f"🎓 Итоговое задание #{submission_id}\n"
+            f"👤 Студент: {data[3]}\n"
+            f"📚 Курс: {data[4]}\n"
+            f"📝 Решение: {data[0] or 'Приложен файл'}")
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Выдать сертификат", callback_data=f"cert_yes_{submission_id}")
+    kb.button(text="❌ Отклонить", callback_data=f"cert_no_{submission_id}")
+    
+    if data[2] and data[1]:
+        if data[2] == 'photo':
+            await bot.send_photo(
+                ADMIN_ID,
+                data[1],
+                caption=text,
+                reply_markup=kb.as_markup()
+            )
+        else:
+            await bot.send_document(
+                ADMIN_ID,
+                data[1],
+                caption=text,
+                reply_markup=kb.as_markup()
+            )
+    else:
+        await bot.send_message(ADMIN_ID, text, reply_markup=kb.as_markup())
+
+# Обработка решения админа
+@dp.callback_query(F.data.startswith("cert_"))
+async def handle_cert_decision(callback: CallbackQuery):
+    action, submission_id = callback.data.split("_")[1], int(callback.data.split("_")[2])
+    
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT user_id, course_id 
+            FROM final_submissions 
+            WHERE final_submission_id = %s
+        ''', (submission_id,))
+        user_id, course_id = cursor.fetchone()
+        
+        cursor.execute('SELECT title FROM courses WHERE course_id = %s', (course_id,))
+        course_title = cursor.fetchone()[0]
+        
+    if action == 'yes':
+        # Генерация сертификата
+        cert_buffer = generate_certificate(
+            name=callback.from_user.full_name,
+            course=course_title
+        )
+        cert_file = BufferedInputFile(cert_buffer.getvalue(), filename="certificate.pdf")
+        
+        # Отправка пользователю
+        await bot.send_document(
+            user_id,
+            cert_file,
+            caption=f"🎉 Поздравляем! Вы успешно прошли курс {course_title}!"
+        )
+        await callback.answer("✅ Сертификат отправлен!")
+    else:
+        await bot.send_message(
+            user_id,
+            f"❌ Ваше итоговое задание по курсу {course_title} требует доработок."
+        )
+        await callback.answer("❌ Решение отклонено")
+    
+    await callback.message.delete()
 
 @dp.message(AdminForm.add_task_media, Command('skip'))
 async def process_task_media(message: Message, state: FSMContext):
