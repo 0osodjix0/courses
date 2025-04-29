@@ -1458,8 +1458,8 @@ async def notify_admin(submission_id: int):
                     f"✏️ Решение студента:\n{content or 'Приложен файл'}")
 
             kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}_{student_id}")
-            kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}_{student_id}")
+            kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
+            kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}")
             kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_id}")
             kb.adjust(2, 1)
 
@@ -1501,38 +1501,33 @@ async def cancel_solution(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("accept_") | F.data.startswith("reject_"))
 async def handle_review(callback: CallbackQuery):
-    """Обработчик принятия/отклонения решений администратором"""
     try:
-        # Проверка и разбор данных
-        data = callback.data.split('_')
-        if len(data) != 3:
-            raise ValueError(f"Некорректный формат данных: {callback.data}")
-
-        action, submission_id_str, student_id_str = data
-        submission_id = int(submission_id_str)
-        student_id = int(student_id_str)
+        action = callback.data.split("_")[0]
+        submission_id = int(callback.data.split("_")[1])
         new_status = "accepted" if action == "accept" else "rejected"
 
         with db.cursor() as cursor:
-            # Обновление статуса и получение информации о задании
+            # Обновляем статус и получаем информацию о задании
             cursor.execute('''
                 UPDATE submissions 
                 SET status = %s 
                 WHERE submission_id = %s
-                RETURNING task_id
+                RETURNING user_id, task_id
             ''', (new_status, submission_id))
             
-            task_id = cursor.fetchone()[0]
-            
-            # Получаем название задания
-            cursor.execute('''
-                SELECT title FROM tasks WHERE task_id = %s
-            ''', (task_id,))
+            result = cursor.fetchone()
+            if not result:
+                await callback.answer("❌ Решение не найдено")
+                return
+                
+            user_id, task_id = result
+
+            cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
             task_title = cursor.fetchone()[0]
 
         # Уведомление студента
         await bot.send_message(
-            student_id,
+            user_id,
             f"📢 Ваше решение по заданию «{task_title}» {new_status}"
         )
 
@@ -1540,19 +1535,13 @@ async def handle_review(callback: CallbackQuery):
         await callback.message.delete()
         await callback.answer(f"✅ Статус обновлен: {new_status}")
 
-    except ValueError as e:
+    except (ValueError, IndexError) as e:
         logger.error(f"Ошибка формата данных: {str(e)}")
         await callback.answer("❌ Некорректный запрос", show_alert=True)
-
-    except psycopg2.Error as e:
-        logger.error(f"Ошибка базы данных: {str(e)}")
-        db.conn.rollback()
-        await callback.answer("⚠️ Ошибка базы данных", show_alert=True)
-
     except Exception as e:
-        logger.error(f"Критическая ошибка: {str(e)}", exc_info=True)
-        await callback.answer("⚠️ Системная ошибка", show_alert=True)
-
+        logger.error(f"Ошибка обработки: {str(e)}")
+        await callback.answer("⚠️ Произошла ошибка", show_alert=True)
+        
 def main_menu() -> types.ReplyKeyboardMarkup:
     """Клавиатура главного меню для пользователей"""
     builder = ReplyKeyboardBuilder()
