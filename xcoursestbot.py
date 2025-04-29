@@ -1440,7 +1440,7 @@ async def notify_admin(submission_id: int):
             cursor.execute('''
                 SELECT s.file_id, s.file_type, s.content,
                        u.full_name, t.title, s.user_id,
-                       t.content as task_content  # Добавляем текст задания
+                       t.content as task_content
                 FROM submissions s
                 JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
@@ -1463,39 +1463,30 @@ async def notify_admin(submission_id: int):
             kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_id}")
             kb.adjust(2, 1)
 
-            # Исправлено admin_id -> ADMIN_ID
-            try:
-                if file_id and file_type:
-                    if file_type == 'photo':
-                        await bot.send_photo(
-                            chat_id=ADMIN_ID,  # <-- исправлено здесь
-                            photo=file_id,
-                            caption=text[:1024],
-                            reply_markup=kb.as_markup()
-                        )
-                    else:
-                        await bot.send_document(
-                            chat_id=ADMIN_ID,  # <-- исправлено здесь
-                            document=file_id,
-                            caption=text[:1024],
-                            reply_markup=kb.as_markup()
-                        )
-                else:
-                    await bot.send_message(
-                        chat_id=ADMIN_ID,  # <-- исправлено здесь
-                        text=text,
+            if file_id and file_type:
+                if file_type == 'photo':
+                    await bot.send_photo(
+                        ADMIN_ID,
+                        file_id,
+                        caption=text[:1024],
                         reply_markup=kb.as_markup()
                     )
-            except Exception as e:
-                logger.error("Notification sending failed: %s", e)
+                else:
+                    await bot.send_document(
+                        ADMIN_ID,
+                        file_id,
+                        caption=text[:1024],
+                        reply_markup=kb.as_markup()
+                    )
+            else:
                 await bot.send_message(
-                    ADMIN_ID,  # <-- исправлено здесь
-                    f"🚨 Не удалось отправить заявку!\nError: {str(e)[:200]}"
+                    ADMIN_ID,
+                    text,
+                    reply_markup=kb.as_markup()
                 )
-
     except Exception as e:
-        logger.critical("Фатальная ошибка в системе уведомлений: %s", e)
-
+        logger.error(f"Ошибка уведомления админа: {str(e)}")
+        
 @dp.message(TaskStates.waiting_for_solution, F.text.in_(["❌ Отмена", "🔙 Назад"]))
 async def cancel_solution(message: Message, state: FSMContext):
     await state.clear()
@@ -1585,6 +1576,7 @@ def admin_menu() -> types.ReplyKeyboardMarkup:
     buttons = [
         "📊 Статистика",
         "📝 Добавить курс",
+        "🔄 Непроверенные задания",
         "🗑 Удалить курс",
         "➕ Добавить модуль",
         "🎓 Добавить итоговое задание",
@@ -1630,6 +1622,137 @@ async def admin_command(message: types.Message):
         logger.error(f"Database error: {e}")
         await message.answer("❌ Ошибка подключения к базе данных")
 
+@dp.message(F.text == "🔄 Непроверенные задания")
+async def show_pending_tasks(message: Message):
+    if str(message.from_user.id) != ADMIN_ID:
+        return
+
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT s.submission_id, t.title, u.full_name, s.submitted_at 
+            FROM submissions s
+            JOIN tasks t ON s.task_id = t.task_id
+            JOIN users u ON s.user_id = u.user_id
+            WHERE s.status = 'pending'
+            ORDER BY s.submitted_at DESC
+        ''')
+        pending_tasks = cursor.fetchall()
+
+    if not pending_tasks:
+        await message.answer("🎉 Нет заданий на проверке!")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for task in pending_tasks:
+        submission_id, title, student_name, date = task
+        builder.button(
+            text=f"📝 {title} ({student_name})",
+            callback_data=f"view_submission_{submission_id}"
+        )
+    
+    builder.adjust(1)
+    await message.answer(
+        "📥 Задания на проверке:",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("view_submission_"))
+async def view_submission(callback: CallbackQuery):
+    submission_id = int(callback.data.split("_")[2])
+    
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT s.content, s.file_id, s.file_type, 
+                   t.title, u.full_name, t.content
+            FROM submissions s
+            JOIN tasks t ON s.task_id = t.task_id
+            JOIN users u ON s.user_id = u.user_id
+            WHERE s.submission_id = %s
+        ''', (submission_id,))
+        data = cursor.fetchone()
+
+    if not data:
+        await callback.answer("❌ Задание не найдено")
+        return
+
+    content, file_id, file_type, title, student, task_text = data
+    text = (f"📚 Задание: {title}\n"
+            f"👤 Студент: {student}\n"
+            f"📝 Текст задания:\n{task_text}\n\n"
+            f"✏️ Решение:\n{content or 'Приложен файл'}")
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
+    kb.button(text="❌ Отклонить", callback_data=f"reject_{submission_id}")
+    
+    if file_id and file_type:
+        if file_type == 'photo':
+            await callback.message.answer_photo(
+                file_id,
+                caption=text,
+                reply_markup=kb.as_markup()
+            )
+        else:
+            await callback.message.answer_document(
+                file_id,
+                caption=text,
+                reply_markup=kb.as_markup()
+            )
+    else:
+        await callback.message.answer(
+            text,
+            reply_markup=kb.as_markup()
+        )
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("accept_"))
+async def accept_submission(callback: CallbackQuery):
+    submission_id = int(callback.data.split("_")[1])
+    
+    with db.cursor() as cursor:
+        cursor.execute('''
+            UPDATE submissions 
+            SET status = 'accepted', 
+                score = 100 
+            WHERE submission_id = %s
+            RETURNING user_id, task_id
+        ''', (submission_id,))
+        user_id, task_id = cursor.fetchone()
+        
+        cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
+        task_title = cursor.fetchone()[0]
+
+    await bot.send_message(
+        user_id,
+        f"✅ Ваше решение по заданию «{task_title}» принято!"
+    )
+    await callback.message.edit_reply_markup()
+    await callback.answer("Решение принято!")
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_submission(callback: CallbackQuery):
+    submission_id = int(callback.data.split("_")[1])
+    
+    with db.cursor() as cursor:
+        cursor.execute('''
+            UPDATE submissions 
+            SET status = 'rejected'
+            WHERE submission_id = %s
+            RETURNING user_id, task_id
+        ''', (submission_id,))
+        user_id, task_id = cursor.fetchone()
+        
+        cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
+        task_title = cursor.fetchone()[0]
+
+    await bot.send_message(
+        user_id,
+        f"❌ Ваше решение по заданию «{task_title}» требует доработок."
+    )
+    await callback.message.edit_reply_markup()
+    await callback.answer("Решение отклонено")
+    
 @dp.message(F.text == "📊 Статистика")
 async def show_stats(message: types.Message):
     if str(message.from_user.id) != ADMIN_ID:
