@@ -483,7 +483,10 @@ async def handle_submit_solution(callback: types.CallbackQuery, state: FSMContex
             module_title=module_title,
             is_retry=last_status == 'rejected'
         )
-        
+        await callback.message.answer(
+        "📤 Отправьте ваше решение:",
+        reply_markup=cancel_keyboard()  
+        )
         # Создаем временную клавиатуру
         builder = ReplyKeyboardBuilder()
         builder.button(text="❌ Отмена")
@@ -508,12 +511,15 @@ async def handle_submit_solution(callback: types.CallbackQuery, state: FSMContex
         logger.error(f"Submit error: {str(e)}")
         await callback.answer("❌ Ошибка начала отправки решения")
 
-@dp.message(TaskStates.waiting_for_solution, F.content_type.in_({'text', 'document', 'photo'}))
+@dp.message(
+    TaskStates.waiting_for_solution,
+    F.content_type.in_({'text', 'document', 'photo'}),
+    ~F.text.in_(["❌ Отмена", "🔙 Назад"])  # Игнорируем кнопки отмены
+)
 async def process_solution(message: Message, state: FSMContext):
+    # Получаем данные из состояния
     data = await state.get_data()
     task_id = data.get('task_id')
-    module_id = data.get('module_id')
-    is_retry = data.get('is_retry', False)
     
     try:
         # Обработка файла
@@ -527,63 +533,33 @@ async def process_solution(message: Message, state: FSMContext):
             file_type = 'photo'
             file_id = message.photo[-1].file_id
 
-        submission_id = None  # Инициализируем переменную
-
         # Сохранение в БД
         with db.cursor() as cursor:
-            if is_retry:
-                # Получаем ID последней отправки
-                cursor.execute('''
-                    SELECT submission_id 
-                    FROM submissions 
-                    WHERE user_id = %s AND task_id = %s 
-                    ORDER BY submitted_at DESC 
-                    LIMIT 1
-                ''', (message.from_user.id, task_id))
-                submission_id = cursor.fetchone()[0]
+            cursor.execute('''
+                INSERT INTO submissions 
+                (user_id, task_id, content, file_id, file_type)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING submission_id
+            ''', (
+                message.from_user.id,
+                task_id,
+                message.text or None,
+                file_id,
+                file_type
+            ))
+            submission_id = cursor.fetchone()[0]
 
-                # Обновляем существующую запись
-                cursor.execute('''
-                    UPDATE submissions SET
-                    content = COALESCE(%s, content),
-                    file_id = COALESCE(%s, file_id),
-                    file_type = COALESCE(%s, file_type),
-                    status = 'pending',
-                    submitted_at = NOW()
-                    WHERE submission_id = %s
-                ''', (
-                    message.text or None,
-                    file_id,
-                    file_type,
-                    submission_id
-                ))
-            else:
-                # Создаем новую запись
-                cursor.execute('''
-                    INSERT INTO submissions 
-                    (user_id, task_id, content, file_id, file_type)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING submission_id
-                ''', (
-                    message.from_user.id,
-                    task_id,
-                    message.text or None,
-                    file_id,
-                    file_type
-                ))
-                submission_id = cursor.fetchone()[0]
-
-        # Уведомление админа (теперь submission_id всегда определен)
+        # Уведомление админа
         await notify_admin(submission_id)
         
-        # Удаление клавиатуры
+        # Успешное завершение
         await message.answer(
             "✅ Решение успешно отправлено на проверку!",
             reply_markup=ReplyKeyboardRemove()
         )
         
         # Показ списка заданий модуля
-        await show_module_tasks(message, module_id, message.from_user.id)
+        await show_module_tasks(message, data['module_id'], message.from_user.id)
 
     except Exception as e:
         logger.error(f"Solution processing error: {str(e)}")
@@ -2049,10 +2025,11 @@ async def select_course_for_module(callback: CallbackQuery, state: FSMContext):
 
 # Обработчик кнопки "Отмена"
 @dp.message(F.text.in_(["❌ Отмена", "🔙 Назад"]))
-async def cancel_actions_handler(message: Message, state: FSMContext):
+async def global_cancel_handler(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state:
         await state.clear()
+        await message.answer("Действие отменено", reply_markup=main_menu())
     
     # Удаляем предыдущие сообщения с клавиатурами
     await message.answer(
