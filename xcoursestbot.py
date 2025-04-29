@@ -292,27 +292,19 @@ async def global_error_handler(update: types.Update, exception: Exception):
     )
     
     try:
-        # Для сообщений
         if update.message:
             await update.message.answer("❌ Произошла системная ошибка")
-        
-        # Для колбэков
         elif update.callback_query:
             await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
 
-        # Отправляем уведомление админу
         error_msg = (
-            f"🚨 *Critical Error*\n"
-            f"• Type: `{type(exception).__name__}`\n"
-            f"• Message: `{str(exception)[:2000]}`\n"
-            f"• Update: `{update.model_dump_json()[:1000]}`"
+            f"🚨 Critical Error\n"
+            f"• Type: {type(exception).__name__}\n"
+            f"• Message: {str(exception)[:2000]}\n"
+            f"• Update: {update.model_dump_json()[:1000]}"
         )
         
-        await bot.send_message(
-            ADMIN_ID,
-            error_msg,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await bot.send_message(ADMIN_ID, error_msg)
         
     except Exception as e:
         logger.error("Ошибка в обработчике ошибок: %s", e)
