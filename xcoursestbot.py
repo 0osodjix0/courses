@@ -71,10 +71,10 @@ class Database:
         self._check_connection()
 
     def _check_connection(self):
-    with self.cursor() as cursor:
-        cursor.execute("SELECT 1")
-        if cursor.fetchone()[0] != 1:
-            raise ConnectionError("Database connection failed")
+        with self.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            if cursor.fetchone()[0] != 1:
+                raise ConnectionError("Database connection failed")
             
     def _connect(self):
         """Установка соединения с PostgreSQL"""
