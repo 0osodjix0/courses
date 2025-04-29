@@ -222,6 +222,7 @@ class AdminForm(StatesGroup):
 class TaskStates(StatesGroup):
     waiting_for_solution = State()
     waiting_for_retry = State()
+    waiting_for_final_solution = State()
     
 def main_menu() -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
