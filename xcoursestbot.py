@@ -282,24 +282,29 @@ async def handle_submit_solution(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка отправки решения")
 
 @dp.errors()
-async def global_error_handler(event: TelegramAPIError, update: types.Update):
-    # Логируем полную информацию
-    logger.error(f"Ошибка в обработке апдейта {update.update_id}:")
-    logger.error(f"Тип: {type(event)}")
-    logger.error(f"Сообщение: {str(event)}")
+async def global_error_handler(update: types.Update, exception: Exception):
+    """Глобальный обработчик всех исключений"""
+    logger.critical("Critical error: %s", exception, exc_info=True)
     
-    # Обработка конкретных ошибок
-    if "Forbidden: bot was blocked by the user" in str(event):
-        user_id = update.message.from_user.id
-        logger.info(f"Пользователь {user_id} заблокировал бота")
-        return True
+    try:
+        # Для сообщений
+        if update.message:
+            await update.message.answer("🚨 Произошла ошибка. Попробуйте позже.")
         
-    # Отправка уведомления админу
-    await bot.send_message(
-        ADMIN_ID,
-        f"⚠️ Произошла ошибка:\n{str(event)[:2000]}"
-    )
-    
+        # Для callback-запросов
+        elif update.callback_query:
+            await update.callback_query.answer("⚠️ Ошибка системы", show_alert=True)
+
+        # Отправка уведомления админу
+        await bot.send_message(
+            ADMIN_ID,
+            f"🔥 Ошибка:\n{str(exception)[:3000]}\n\n"
+            f"Update: {update.model_dump_json()}"
+        )
+        
+    except Exception as e:
+        logger.error("Error in error handler: %s", e)
+
     return True
     
 @dp.message(F.text.startswith("🔄 Отправить исправление"))
