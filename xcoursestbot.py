@@ -201,7 +201,6 @@ dp.message.middleware(CleanupMiddleware())
 class Form(StatesGroup):
     full_name = State()
     course_selection = State()
-    waiting_for_solution = State()
 
 class AdminForm(StatesGroup):
     add_course_title = State()
