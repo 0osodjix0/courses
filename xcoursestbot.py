@@ -1659,87 +1659,100 @@ async def admin_command(message: types.Message):
 
 @dp.message(F.text == "🔄 Непроверенные задания")
 async def show_pending_tasks(message: Message):
-    with db.cursor() as cursor:
-        # Исправленный запрос:
-        cursor.execute('''
-            SELECT s.submission_id, t.title, u.full_name, s.submitted_at
-            FROM submissions s
-            JOIN tasks t ON s.task_id = t.task_id
-            JOIN users u ON s.user_id = u.user_id
-            WHERE s.status = 'pending'
-            ORDER BY s.submitted_at DESC
-        ''')
+    try:
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT 
+                    s.submission_id,
+                    t.title AS task_title,
+                    u.full_name,
+                    s.submitted_at
+                FROM submissions s
+                JOIN tasks t ON s.task_id = t.task_id
+                JOIN users u ON s.user_id = u.user_id
+                WHERE s.status = 'pending'
+                ORDER BY s.submitted_at DESC
+            ''')
+            pending_tasks = cursor.fetchall()
+
+        if not pending_tasks:
+            await message.answer("🎉 Нет заданий на проверке!")
+            return
+
+        builder = InlineKeyboardBuilder()
+        for task in pending_tasks:
+            submission_id, title, student, date = task
+            builder.button(
+                text=f"📝 {title} ({student})",
+                callback_data=f"view_sub_{submission_id}"
+            )
         
-        tasks = cursor.fetchall()
-
-    if not pending_tasks:
-        await message.answer("🎉 Нет заданий на проверке!")
-        return
-
-    builder = InlineKeyboardBuilder()
-    for task in pending_tasks:
-        submission_id, title, student_name, date = task
-        builder.button(
-            text=f"📝 {title} ({student_name})",
-            callback_data=f"view_submission_{submission_id}"
+        builder.adjust(1)
+        await message.answer(
+            "📥 Задания на проверке:",
+            reply_markup=builder.as_markup()
         )
-    
-    builder.adjust(1)
-    await message.answer(
-        "📥 Задания на проверке:",
-        reply_markup=builder.as_markup()
-    )
 
-@dp.callback_query(F.data.startswith("view_submission_"))
+    except Exception as e:
+        logger.error("Ошибка показа заданий: %s", e)
+        await message.answer("❌ Ошибка загрузки заданий")
+        
+
+@dp.callback_query(F.data.startswith("view_sub_"))
 async def view_submission(callback: CallbackQuery):
-    submission_id = int(callback.data.split("_")[2])
-    
-    with db.cursor() as cursor:
-        cursor.execute('''
-            SELECT s.content, s.file_id, s.file_type, 
-                   t.title, u.full_name, t.content
-            FROM submissions s
-            JOIN tasks t ON s.task_id = t.task_id
-            JOIN users u ON s.user_id = u.user_id
-            WHERE s.submission_id = %s
-        ''', (submission_id,))
-        data = cursor.fetchone()
+    try:
+        submission_id = int(callback.data.split("_")[2])
+        
+        with db.cursor() as cursor:
+            cursor.execute('''
+                SELECT s.content, s.file_id, s.file_type,
+                       t.title, u.full_name, t.content
+                FROM submissions s
+                JOIN tasks t ON s.task_id = t.task_id
+                JOIN users u ON s.user_id = u.user_id
+                WHERE s.submission_id = %s
+            ''', (submission_id,))
+            data = cursor.fetchone()
 
-    if not data:
-        await callback.answer("❌ Задание не найдено")
-        return
+        if not data:
+            await callback.answer("❌ Задание не найдено")
+            return
 
-    content, file_id, file_type, title, student, task_text = data
-    text = (f"📚 Задание: {title}\n"
-            f"👤 Студент: {student}\n"
-            f"📝 Текст задания:\n{task_text}\n\n"
-            f"✏️ Решение:\n{content or 'Приложен файл'}")
+        content, file_id, file_type, title, student, task_text = data
+        text = (f"📚 Задание: {title}\n"
+                f"👤 Студент: {student}\n"
+                f"📝 Текст задания:\n{task_text}\n\n"
+                f"✏️ Решение:\n{content or 'Приложен файл'}")
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
-    kb.button(text="❌ Отклонить", callback_data=f"reject_{submission_id}")
-    
-    if file_id and file_type:
-        if file_type == 'photo':
-            await callback.message.answer_photo(
-                file_id,
-                caption=text,
-                reply_markup=kb.as_markup()
-            )
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
+        kb.button(text="❌ Отклонить", callback_data=f"reject_{submission_id}")
+        
+        if file_id and file_type:
+            if file_type == 'photo':
+                await callback.message.answer_photo(
+                    file_id,
+                    caption=text,
+                    reply_markup=kb.as_markup()
+                )
+            else:
+                await callback.message.answer_document(
+                    file_id,
+                    caption=text,
+                    reply_markup=kb.as_markup()
+                )
         else:
-            await callback.message.answer_document(
-                file_id,
-                caption=text,
+            await callback.message.answer(
+                text,
                 reply_markup=kb.as_markup()
             )
-    else:
-        await callback.message.answer(
-            text,
-            reply_markup=kb.as_markup()
-        )
-    
-    await callback.answer()
-
+            
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error("Ошибка просмотра задания: %s", e)
+        await callback.answer("❌ Ошибка загрузки")
+        
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_submission(callback: CallbackQuery):
     submission_id = int(callback.data.split("_")[1])
