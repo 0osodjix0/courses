@@ -1207,19 +1207,19 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 
 # Универсальный обработчик ошибок
 @dp.errors()
-async def global_error_handler(event: types.Update, exception: Exception) -> bool:
+async def global_error_handler(update: types.Update, exception: Exception):
     """Глобальный обработчик всех исключений"""
     logger.critical("Critical error: %s", exception, exc_info=True)
     
     try:
-        if event.callback_query:
-            await event.callback_query.answer("⚠️ Произошла ошибка", show_alert=True)
-        elif event.message:
-            await event.message.answer("🚨 Системная ошибка. Попробуйте позже.")
+        if update.callback_query:
+            await update.callback_query.answer("⚠️ Произошла ошибка", show_alert=True)
+        elif update.message:
+            await update.message.answer("🚨 Системная ошибка. Попробуйте позже.")
         
-        await dp.bot.send_message(
+        await bot.send_message(
             ADMIN_ID,
-            f"🔥 Ошибка:\n{exception}\n\nUpdate: {event.model_dump_json()}"
+            f"🔥 Ошибка:\n{exception}\n\nUpdate: {update.model_dump_json()}"
         )
     except Exception as e:
         logger.error("Ошибка в обработчике ошибок: %s", e)
