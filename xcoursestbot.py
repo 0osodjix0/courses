@@ -1541,7 +1541,15 @@ async def handle_review(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка обработки: {str(e)}")
         await callback.answer("⚠️ Произошла ошибка", show_alert=True)
-        
+
+        await send_user_notification(
+            user_id, 
+            f"📢 Ваше решение по заданию «{task_title}» {new_status}"
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка обработки: {str(e)}")
+        await callback.answer("⚠️ Произошла ошибка", show_alert=True)
 def main_menu() -> types.ReplyKeyboardMarkup:
     """Клавиатура главного меню для пользователей"""
     builder = ReplyKeyboardBuilder()
