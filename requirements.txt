@@ -2,6 +2,10 @@ aiogram>=3.0.0
 python-dotenv==1.0.0
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
-psycopg2-binary==2.9.9  # Драйвер для PostgreSQL
+psycopg2-binary==2.9.9  
 sqlalchemy==2.0.23  
-echo "reportlab==4.1.0" >> requirements.txt
+echo "reportlab==4.1.0"
+reportlab==4.1.0
+psycopg2-binary==2.9.10
+python-dotenv==1.0.1
+aiogram==3.7.0
