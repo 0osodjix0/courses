@@ -2,6 +2,7 @@ import os
 import logging
 import random
 import psycopg2
+from aiogram.exceptions import TelegramAPIError
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -265,6 +266,27 @@ async def handle_submit_solution(message: Message, state: FSMContext):
         logger.error(f"Submit error: {str(e)}")
         await message.answer("❌ Ошибка отправки решения")
 
+@dp.errors()
+async def global_error_handler(event: TelegramAPIError, update: types.Update):
+    # Логируем полную информацию
+    logger.error(f"Ошибка в обработке апдейта {update.update_id}:")
+    logger.error(f"Тип: {type(event)}")
+    logger.error(f"Сообщение: {str(event)}")
+    
+    # Обработка конкретных ошибок
+    if "Forbidden: bot was blocked by the user" in str(event):
+        user_id = update.message.from_user.id
+        logger.info(f"Пользователь {user_id} заблокировал бота")
+        return True
+        
+    # Отправка уведомления админу
+    await bot.send_message(
+        ADMIN_ID,
+        f"⚠️ Произошла ошибка:\n{str(event)[:2000]}"
+    )
+    
+    return True
+    
 @dp.message(F.text.startswith("🔄 Отправить исправление"))
 async def handle_retry_solution(message: Message, state: FSMContext):
     try:
