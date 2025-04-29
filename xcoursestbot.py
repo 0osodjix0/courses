@@ -68,7 +68,14 @@ class Database:
         self.conn = None
         self._connect()
         self._init_tables()
-        
+        self._check_connection()
+
+    def _check_connection(self):
+    with self.cursor() as cursor:
+        cursor.execute("SELECT 1")
+        if cursor.fetchone()[0] != 1:
+            raise ConnectionError("Database connection failed")
+            
     def _connect(self):
         """Установка соединения с PostgreSQL"""
         try:
@@ -146,6 +153,14 @@ class Database:
                         file_id TEXT,
                         content TEXT
                     )''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_submissions_status 
+                    ON submissions(status)
+                    ''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_submissions_user_task 
+                    ON submissions(user_id, task_id)
+                    ''')
 
                 # Добавление недостающих колонок
                 self._safe_add_column(cursor, 'tasks', 'file_type', 'VARCHAR(10)')
@@ -1432,28 +1447,34 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка повторной отправки")
 
 ### 3. Единый обработчик отправки решений ###
+# Добавить после инициализации бота:
 async def notify_admin(submission_id: int):
     try:
         with db.cursor() as cursor:
+            # Исправленный запрос:
             cursor.execute('''
                 SELECT s.file_id, s.file_type, s.content,
-                       u.full_name, t.title, s.user_id,
-                       t.content as task_content
+                       t.title, u.full_name, t.content as task_text
                 FROM submissions s
-                JOIN users u ON s.user_id = u.user_id
                 JOIN tasks t ON s.task_id = t.task_id
+                JOIN users u ON s.user_id = u.user_id
                 WHERE s.submission_id = %s
             ''', (submission_id,))
-            data = cursor.fetchone()
             
-            if not data: return
+            data = cursor.fetchone()
+            if not data:
+                return
 
-            file_id, file_type, content, full_name, title, student_id, task_content = data
+            # Формирование сообщения с текстом задания
             text = (f"📬 Новое решение #{submission_id}\n"
-                    f"👤 Студент: {full_name}\n"
-                    f"📚 Задание: {title}\n"
-                    f"📝 Текст задания:\n{task_content}\n\n"
-                    f"✏️ Решение студента:\n{content or 'Приложен файл'}")
+                    f"📚 Задание: {data[3]}\n"
+                    f"👤 Студент: {data[4]}\n"
+                    f"📝 Текст задания:\n{data[5]}\n\n"
+                    f"✏️ Решение:\n{data[2] or 'Файл во вложении'}")
+
+            # Отправка файла
+            if data[0] and data[1]:
+                ...
 
             kb = InlineKeyboardBuilder()
             kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
@@ -1619,19 +1640,18 @@ async def admin_command(message: types.Message):
 
 @dp.message(F.text == "🔄 Непроверенные задания")
 async def show_pending_tasks(message: Message):
-    if str(message.from_user.id) != ADMIN_ID:
-        return
-
     with db.cursor() as cursor:
+        # Исправленный запрос:
         cursor.execute('''
-            SELECT s.submission_id, t.title, u.full_name, s.submitted_at 
+            SELECT s.submission_id, t.title, u.full_name, s.submitted_at
             FROM submissions s
             JOIN tasks t ON s.task_id = t.task_id
             JOIN users u ON s.user_id = u.user_id
             WHERE s.status = 'pending'
             ORDER BY s.submitted_at DESC
         ''')
-        pending_tasks = cursor.fetchall()
+        
+        tasks = cursor.fetchall()
 
     if not pending_tasks:
         await message.answer("🎉 Нет заданий на проверке!")
