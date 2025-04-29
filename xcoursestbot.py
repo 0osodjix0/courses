@@ -283,27 +283,39 @@ async def handle_submit_solution(message: Message, state: FSMContext):
 
 @dp.errors()
 async def global_error_handler(update: types.Update, exception: Exception):
-    """Глобальный обработчик всех исключений"""
-    logger.critical("Critical error: %s", exception, exc_info=True)
+    """Глобальный обработчик ошибок с правильной сигнатурой"""
+    logger.critical(
+        "Ошибка в обработчике: %s\nUpdate: %s",
+        exception,
+        update.model_dump_json(),
+        exc_info=True
+    )
     
     try:
         # Для сообщений
         if update.message:
-            await update.message.answer("🚨 Произошла ошибка. Попробуйте позже.")
+            await update.message.answer("❌ Произошла системная ошибка")
         
-        # Для callback-запросов
+        # Для колбэков
         elif update.callback_query:
-            await update.callback_query.answer("⚠️ Ошибка системы", show_alert=True)
+            await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
 
-        # Отправка уведомления админу
+        # Отправляем уведомление админу
+        error_msg = (
+            f"🚨 *Critical Error*\n"
+            f"• Type: `{type(exception).__name__}`\n"
+            f"• Message: `{str(exception)[:2000]}`\n"
+            f"• Update: `{update.model_dump_json()[:1000]}`"
+        )
+        
         await bot.send_message(
             ADMIN_ID,
-            f"🔥 Ошибка:\n{str(exception)[:3000]}\n\n"
-            f"Update: {update.model_dump_json()}"
+            error_msg,
+            parse_mode=ParseMode.MARKDOWN
         )
         
     except Exception as e:
-        logger.error("Error in error handler: %s", e)
+        logger.error("Ошибка в обработчике ошибок: %s", e)
 
     return True
     
