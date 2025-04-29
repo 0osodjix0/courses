@@ -812,12 +812,14 @@ async def handle_media(message: Message):
         return {'type': 'document', 'file_id': message.document.file_id}
     return None
 
-def courses_kb():
+def courses_kb() -> types.InlineKeyboardMarkup:
+    """Клавиатура с курсами и кнопкой Назад"""
+    builder = InlineKeyboardBuilder()
+    
     with db.cursor() as cursor:
         cursor.execute("SELECT course_id, title FROM courses")
         courses = cursor.fetchall()
-    
-    builder = InlineKeyboardBuilder()
+
     for course in courses:
         builder.button(
             text=f"📘 {course[1]}", 
@@ -826,6 +828,14 @@ def courses_kb():
     builder.button(text="❌ Отмена", callback_data="cancel")
     builder.adjust(1)
     return builder.as_markup()
+    
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    
+    builder.adjust(1)
+    return builder.as_markup(
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
 
 @dp.message(F.text == "📚 Выбрать курс")
 async def show_courses(message: types.Message):
