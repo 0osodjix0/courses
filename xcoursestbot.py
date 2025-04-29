@@ -1395,9 +1395,6 @@ async def show_all_courses(callback: types.CallbackQuery):
         logger.error(f"Ошибка загрузки курсов: {e}")
         await callback.answer("❌ Ошибка загрузки списка курсов")
 
-class TaskStates(StatesGroup):
-    waiting_for_solution = State()
-
 ### 2. Добавляем новый обработчик ###
 @dp.callback_query(F.data.startswith("retry_"))
 async def retry_submission(callback: CallbackQuery, state: FSMContext):
