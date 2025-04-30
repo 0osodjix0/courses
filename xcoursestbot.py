@@ -1373,23 +1373,29 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 # Универсальный обработчик ошибок
 @dp.errors()
 async def global_error_handler(update: types.Update, exception: Exception):
-    """Глобальный обработчик всех исключений"""
-    logger.critical("Critical error: %s", exception, exc_info=True)
-    
+    logger.critical(f"Critical error: {exception}", exc_info=True)
     try:
-        if update.callback_query:
-            await update.callback_query.answer("⚠️ Произошла ошибка", show_alert=True)
-        elif update.message:
-            await update.message.answer("🚨 Системная ошибка. Попробуйте позже.")
+        error_msg = f"🚨 Error: {str(exception)[:2000]}"
+        await bot.send_message(ADMIN_ID, error_msg)
         
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔥 Ошибка:\n{exception}\n\nUpdate: {update.model_dump_json()}"
-        )
+        if update.message:
+            await update.message.answer("❌ Произошла ошибка, попробуйте позже")
+        elif update.callback_query:
+            await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
+            
     except Exception as e:
-        logger.error("Ошибка в обработчике ошибок: %s", e)
+        logger.error(f"Error handler error: {e}")
     
     return True
+
+@dp.callback_query(F.data == "back_to_content_list")
+async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    content_type = data.get('content_type', 'courses')  # Значение по умолчанию
+    
+    # Повторно используем обработчик выбора типа контента
+    await select_content_type(callback, state)
+    await callback.answer()
 
 @dp.message(F.text == "🏠 В главное меню")
 async def handle_main_menu(message: Message, state: FSMContext):
@@ -2421,7 +2427,12 @@ async def content_management(message: Message):
 async def select_content_type(callback: CallbackQuery, state: FSMContext):
     content_type = callback.data.split("_")[2]
     await state.update_data(content_type=content_type)
-    
+
+    valid_types = {"courses", "modules", "tasks", "final"}
+    if content_type not in valid_types:
+        await callback.answer("❌ Неверный тип контента")
+        return
+        
     # Получаем список элементов
     with db.cursor() as cursor:
         table_map = {
@@ -2696,8 +2707,8 @@ async def process_edit_course(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "confirm_delete")
 async def confirm_delete(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    content_type = data['content_type']
-    item_id = data['item_id']
+    content_type = data.get('content_type')
+    item_id = data.get('item_id')
     
     try:
         with db.cursor() as cursor:
@@ -2716,8 +2727,8 @@ async def confirm_delete(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         logger.error(f"Ошибка удаления: {e}")
         await callback.answer("❌ Ошибка при удалении элемента")
-    
-    await state.clear()
+    finally:
+        await state.clear()
 
 @dp.callback_query(F.data == "cancel_delete")
 async def cancel_delete(callback: CallbackQuery, state: FSMContext):
@@ -2742,7 +2753,6 @@ async def back_to_edit_menu(callback: CallbackQuery):
         "Выберите тип контента:",
         reply_markup=builder.as_markup()
     )
-    await callback.answer()
 
 @dp.callback_query(F.data == "admin_menu")
 async def back_to_admin_menu(callback: CallbackQuery, state: FSMContext):
