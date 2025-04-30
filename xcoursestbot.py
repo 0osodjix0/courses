@@ -1388,15 +1388,6 @@ async def global_error_handler(update: types.Update, exception: Exception):
     
     return True
 
-@dp.callback_query(F.data == "back_to_content_list")
-async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    content_type = data.get('content_type', 'courses')  # Значение по умолчанию
-    
-    # Повторно используем обработчик выбора типа контента
-    await select_content_type(callback, state)
-    await callback.answer()
-
 @dp.message(F.text == "🏠 В главное меню")
 async def handle_main_menu(message: Message, state: FSMContext):
     await state.clear()
@@ -2489,10 +2480,47 @@ def edit_action_keyboard():
 @dp.callback_query(F.data == "back_to_content_list")
 async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    content_type = data['content_type']
+    content_type = data.get('content_type')
     
-    # Повторно используем обработчик выбора типа контента
-    await select_content_type(callback, state)
+    # Добавляем проверку и значение по умолчанию
+    if content_type not in {"courses", "modules", "tasks", "final"}:
+        content_type = "courses"  # Значение по умолчанию
+    
+    # Формируем корректный callback_data
+    await callback.message.edit_text(
+        "Выберите тип контента:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📚 Курсы",
+                        callback_data=f"edit_content_courses"
+                    ),
+                    InlineKeyboardButton(
+                        text="📦 Модули",
+                        callback_data=f"edit_content_modules"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📝 Задания",
+                        callback_data=f"edit_content_tasks"
+                    ),
+                    InlineKeyboardButton(
+                        text="🎓 Итоговые",
+                        callback_data=f"edit_content_final"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔙 В админ-меню",
+                        callback_data="admin_menu"
+                    )
+                ]
+            ]
+        )
+    )
+    await state.update_data(content_type=content_type)
     await callback.answer()
 
 @dp.callback_query(F.data == "delete_item")
