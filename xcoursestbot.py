@@ -292,7 +292,7 @@ class AdminForm(StatesGroup):
     edit_module = State()
     edit_task = State()
     edit_final_task = State()
-    delete_confirmation = State(
+    delete_confirmation = State()
 
 
 class TaskStates(StatesGroup):
