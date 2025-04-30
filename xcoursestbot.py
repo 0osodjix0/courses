@@ -2575,18 +2575,23 @@ async def confirm_delete(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         
 @dp.callback_query(F.data == "edit_content_menu")
-async def back_to_content_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+async def back_to_content_menu(callback: CallbackQuery):
     await callback.message.edit_text(
         "Выберите тип контента:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📚 Курсы", callback_data="edit_content_courses"),
-             InlineKeyboardButton(text="📦 Модули", callback_data="edit_content_modules")],
-            [InlineKeyboardButton(text="📝 Задания", callback_data="edit_content_tasks"),
-             InlineKeyboardButton(text="🎓 Итоговые", callback_data="edit_content_final")]
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="📚 Курсы", callback_data="edit_content_courses"),
+                    InlineKeyboardButton(text="📦 Модули", callback_data="edit_content_modules")
+                ],
+                [
+                    InlineKeyboardButton(text="📝 Задания", callback_data="edit_content_tasks"),
+                    InlineKeyboardButton(text="🎓 Итоговые", callback_data="edit_content_final")
+                ]
+            ]
         )
     )
-
+    await callback.answer()
 @dp.message(AdminForm.add_task_media, F.content_type.in_({'document', 'photo'}))
 async def process_task_media(message: Message, state: FSMContext):
     media = await handle_media(message)
