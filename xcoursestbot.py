@@ -337,12 +337,17 @@ async def check_final_task(callback: CallbackQuery):
     if db.is_course_completed(user_id, course_id):
         await callback.message.answer(
             "🎉 Вы выполнили все задания курса! Можете приступить к итоговому заданию:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="🎓 Итоговое задание",
-                    callback_data=f"final_task_{course_id}"
-                )]
-            ])
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🎓 Итоговое задание",
+                            callback_data=f"final_task_{course_id}"
+                        )
+                    ]
+                ]
+            )  # Закрывающая скобка для reply_markup
+        )  # Закрывающая скобка для answer()
     else:
         await callback.answer("❌ Сначала завершите все задания курса!", show_alert=True)
 
