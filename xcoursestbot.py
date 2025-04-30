@@ -345,32 +345,20 @@ async def handle_submit_solution(message: Message, state: FSMContext):
 
 @dp.errors()
 async def global_error_handler(update: types.Update, exception: Exception):
-    """Глобальный обработчик ошибок с правильной сигнатурой"""
-    logger.critical(
-        "Ошибка в обработчике: %s\nUpdate: %s",
-        exception,
-        update.model_dump_json(),
-        exc_info=True
-    )
+    logger.error(f"Critical error: {exception}", exc_info=True)
     
     try:
-        if update.message:
-            await update.message.answer("❌ Произошла системная ошибка")
-        elif update.callback_query:
-            await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
-
-        error_msg = (
-            f"🚨 Critical Error\n"
-            f"• Type: {type(exception).__name__}\n"
-            f"• Message: {str(exception)[:2000]}\n"
-            f"• Update: {update.model_dump_json()[:1000]}"
-        )
-        
+        error_msg = f"🚨 Error: {str(exception)[:2000]}"
         await bot.send_message(ADMIN_ID, error_msg)
         
+        if update.message:
+            await update.message.answer("❌ Произошла ошибка, попробуйте позже")
+        elif update.callback_query:
+            await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
+            
     except Exception as e:
-        logger.error("Ошибка в обработчике ошибок: %s", e)
-
+        logger.error(f"Error handler error: {e}")
+    
     return True
 
 # Добавляем обработчик проверки курса
@@ -2492,52 +2480,60 @@ async def handle_content_action(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     content_type = data['content_type']
     
-    if action == "edit_action":
-        if content_type == "courses":
-            await state.set_state(AdminForm.edit_course)
-        elif content_type == "modules":
-            await state.set_state(AdminForm.edit_module)
-        elif content_type == "tasks":
-            await state.set_state(AdminForm.edit_task)
-        elif content_type == "final":
-            await state.set_state(AdminForm.edit_final_task)
-            
-        await callback.message.answer("Введите новые данные (формат: Название|Описание|file_id)")
-    
-    elif action == "delete_action":
-        await state.set_state(AdminForm.delete_confirmation)
-        await callback.message.answer(
-            "❌ Вы уверены что хотите удалить?",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
+    try:
+        if action == "edit_action":
+            states = {
+                "courses": AdminForm.edit_course,
+                "modules": AdminForm.edit_module,
+                "tasks": AdminForm.edit_task,
+                "final": AdminForm.edit_final_task
+            }
+            await state.set_state(states[content_type])
+            await callback.message.answer(
+                "Введите новые данные (формат: Название|Описание|file_id)\n"
+                "Пример: Новое название|Новое описание|AgAC..."
+            )
+        
+        elif action == "delete_action":
+            await state.set_state(AdminForm.delete_confirmation)
+            await callback.message.edit_text(
+                "❌ Вы уверены что хотите удалить?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [
                         InlineKeyboardButton(text="✅ Да", callback_data="confirm_delete"),
                         InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")
                     ]
-                ]
+                ])
             )
-        )  # Закрыты 3 скобки: для списка кнопок, InlineKeyboardMarkup и reply_markup
+    
+    except Exception as e:
+        logger.error(f"Error in handle_content_action: {e}")
+        await callback.answer("❌ Произошла ошибка")
         
 # Обработчик редактирования курса
 @dp.message(AdminForm.edit_course)
 async def process_edit_course(message: Message, state: FSMContext):
-    data = await state.get_data()
     try:
-        # Проверка формата данных
+        data = await state.get_data()
         if '|' not in message.text:
             raise ValueError("Некорректный формат данных")
             
-        title, description, file_id = map(str.strip, message.text.split('|', 2))
+        parts = message.text.split('|', 2)
+        title = parts[0].strip()
+        description = parts[1].strip() if len(parts) > 1 else ""
+        file_id = parts[2].strip() if len(parts) > 2 else None
         
         with db.cursor() as cursor:
             cursor.execute('''
                 UPDATE courses 
-                SET title = %s, description = %s, media_id = %s 
+                SET title = %s, 
+                    description = COALESCE(%s, description), 
+                    media_id = COALESCE(%s, media_id) 
                 WHERE course_id = %s
             ''', (title, description, file_id, data['item_id']))
             
         await message.answer("✅ Курс успешно обновлен!")
-        await show_content_management(message)  # Возврат в меню
+        await show_content_management(message)
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}\nПопробуйте снова:")
@@ -2554,20 +2550,17 @@ async def confirm_delete(callback: CallbackQuery, state: FSMContext):
             content_type = data['content_type']
             item_id = data['item_id']
             
-            # Выбор таблицы для удаления
-            if content_type == "courses":
-                cursor.execute("DELETE FROM courses WHERE course_id = %s", (item_id,))
-            elif content_type == "modules":
-                cursor.execute("DELETE FROM modules WHERE module_id = %s", (item_id,))
-            elif content_type == "tasks":
-                cursor.execute("DELETE FROM tasks WHERE task_id = %s", (item_id,))
-            elif content_type == "final":
-                cursor.execute("DELETE FROM final_tasks WHERE final_task_id = %s", (item_id,))
-                
-            await callback.message.edit_text("✅ Элемент успешно удален!")
+            tables = {
+                "courses": ("courses", "course_id"),
+                "modules": ("modules", "module_id"),
+                "tasks": ("tasks", "task_id"),
+                "final": ("final_tasks", "final_task_id")
+            }
             
-            # Обновление списка элементов
-            await show_content_list(callback.message, content_type)
+            table, column = tables[content_type]
+            cursor.execute(f"DELETE FROM {table} WHERE {column} = %s", (item_id,))
+            
+            await callback.message.edit_text(f"✅ {content_type[:-1].capitalize()} успешно удален!")
             
     except Exception as e:
         await callback.message.answer(f"❌ Ошибка удаления: {str(e)}")
@@ -2578,20 +2571,20 @@ async def confirm_delete(callback: CallbackQuery, state: FSMContext):
 async def back_to_content_menu(callback: CallbackQuery):
     await callback.message.edit_text(
         "Выберите тип контента:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="📚 Курсы", callback_data="edit_content_courses"),
-                    InlineKeyboardButton(text="📦 Модули", callback_data="edit_content_modules")
-                ],
-                [
-                    InlineKeyboardButton(text="📝 Задания", callback_data="edit_content_tasks"),
-                    InlineKeyboardButton(text="🎓 Итоговые", callback_data="edit_content_final")
-                ]
-            ]
-        )
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📚 Курсы", callback_data="edit_content_courses"),
+                InlineKeyboardButton(text="📦 Модули", callback_data="edit_content_modules")
+            ],
+            [
+                InlineKeyboardButton(text="📝 Задания", callback_data="edit_content_tasks"),
+                InlineKeyboardButton(text="🎓 Итоговые", callback_data="edit_content_final")
+            ],
+            [InlineKeyboardButton(text="🔙 В главное меню", callback_data="admin_menu")]
+        ])
     )
     await callback.answer()
+    
 @dp.message(AdminForm.add_task_media, F.content_type.in_({'document', 'photo'}))
 async def process_task_media(message: Message, state: FSMContext):
     media = await handle_media(message)
