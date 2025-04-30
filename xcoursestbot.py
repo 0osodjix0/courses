@@ -2455,12 +2455,16 @@ async def select_item(callback: CallbackQuery, state: FSMContext):
     item_id = int(callback.data.split("_")[2])
     await state.update_data(item_id=item_id)
     
+    # Создаем клавиатуру
+    keyboard = edit_action_keyboard()
+    
+    # Редактируем сообщение
     await callback.message.edit_text(
         "Выберите действие:",
-        reply_markup=edit_action_keyboard()
+        reply_markup=keyboard
     )
     await state.set_state(AdminForm.edit_action)
-    
+
 def edit_action_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Название", callback_data="edit_title")
@@ -2470,11 +2474,6 @@ def edit_action_keyboard():
     builder.button(text="🔙 Назад", callback_data="back_to_content_list")
     builder.adjust(2, 1, 1, 1)
     return builder.as_markup()
-    
-    await callback.message.edit_text(
-        "Выберите что хотите изменить:",
-        reply_markup=builder.as_markup()
-    )
 
 @dp.callback_query(F.data == "back_to_content_list")
 async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
