@@ -24,7 +24,7 @@ from aiogram.filters import Command, BaseFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram import BaseMiddleware
-from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
 from aiogram.enums import ParseMode 
 from aiogram.types import (
@@ -2399,41 +2399,57 @@ async def content_management(message: Message):
 # Общий обработчик выбора типа контента
 @dp.callback_query(F.data.startswith("edit_content_"))
 async def select_content_type(callback: CallbackQuery, state: FSMContext):
-    content_type = callback.data.split("_")[2]
-    await state.update_data(content_type=content_type)
-
-    valid_types = {"courses", "modules", "tasks", "final"}
-    if content_type not in valid_types:
-        await callback.answer("❌ Неверный тип контента")
-        return
+    try:
+        content_type = callback.data.split("_")[2]
+        valid_types = {"courses", "modules", "tasks", "final"}
         
-    # Получаем список элементов
-    with db.cursor() as cursor:
-        table_map = {
-            "courses": ("courses", "course_id", "title"),
-            "modules": ("modules", "module_id", "title"),
-            "tasks": ("tasks", "task_id", "title"),
-            "final": ("final_tasks", "final_task_id", "title")
-        }
-        
-        table, id_col, title_col = table_map[content_type]
-        cursor.execute(f"SELECT {id_col}, {title_col} FROM {table}")
-        items = cursor.fetchall()
+        if content_type not in valid_types:
+            await callback.answer("❌ Неверный тип контента")
+            return
 
-    builder = InlineKeyboardBuilder()
-    for item_id, title in items:
+        # Сохраняем тип контента в state
+        await state.update_data(content_type=content_type)
+        
+        # Получаем список элементов
+        with db.cursor() as cursor:
+            table_map = {
+                "courses": ("courses", "course_id", "title"),
+                "modules": ("modules", "module_id", "title"),
+                "tasks": ("tasks", "task_id", "title"),
+                "final": ("final_tasks", "final_task_id", "title")
+            }
+            
+            table, id_col, title_col = table_map[content_type]
+            cursor.execute(f"SELECT {id_col}, {title_col} FROM {table}")
+            items = cursor.fetchall()
+
+        builder = InlineKeyboardBuilder()
+        for item_id, title in items:
+            builder.button(
+                text=title,
+                callback_data=f"edit_select_{item_id}"
+            )
         builder.button(
-            text=title,
-            callback_data=f"edit_select_{item_id}"
+            text="🔙 Назад", 
+            callback_data=f"edit_content_back_{content_type}"  # Добавляем тип в callback
         )
-    builder.button(text="🔙 В меню", callback_data="edit_content_menu")
-    builder.adjust(1)
-    
-    await callback.message.edit_text(
-        "Выберите элемент для редактирования:",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(AdminForm.edit_select_item)
+        builder.adjust(1)
+        
+        await callback.message.edit_text(
+            "Выберите элемент для редактирования:",
+            reply_markup=builder.as_markup()
+        )
+        await state.set_state(AdminForm.edit_select_item)
+
+    except Exception as e:
+        logger.error(f"Ошибка выбора типа контента: {str(e)}")
+        await callback.answer("❌ Ошибка загрузки")
+
+@dp.callback_query(F.data.startswith("edit_content_back_"))
+async def back_to_content_types(callback: CallbackQuery, state: FSMContext):
+    content_type = callback.data.split("_")[3]
+    await state.update_data(content_type=content_type)
+    await select_content_type(callback, state)
 
 @dp.callback_query(F.data.startswith("edit_select_"))
 async def select_item(callback: CallbackQuery, state: FSMContext):
@@ -2460,41 +2476,25 @@ def edit_action_keyboard():
     builder.adjust(2, 1, 1, 1)
     return builder.as_markup()
 
-@dp.callback_query(F.data == "back_to_content_list")
+@dp.callback_query(F.data == "back_to_content_list"))
 async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    content_type = data.get('content_type', 'courses')  # Значение по умолчанию
+    content_type = data.get('content_type', 'courses')
     
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📚 Курсы",
-                    callback_data=f"edit_content_courses"
-                ),
-                InlineKeyboardButton(
-                    text="📦 Модули",
-                    callback_data=f"edit_content_modules"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📝 Задания",
-                    callback_data=f"edit_content_tasks"
-                ),
-                InlineKeyboardButton(
-                    text="🎓 Итоговые",
-                    callback_data=f"edit_content_final"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔙 В админ-меню",
-                    callback_data="admin_menu"
-                )
-            ]
+    # Формируем клавиатуру
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📚 Курсы", callback_data="edit_content_courses"),
+            InlineKeyboardButton(text="📦 Модули", callback_data="edit_content_modules")
+        ],
+        [
+            InlineKeyboardButton(text="📝 Задания", callback_data="edit_content_tasks"),
+            InlineKeyboardButton(text="🎓 Итоговые", callback_data="edit_content_final")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 В админ-меню", callback_data="admin_menu")
         ]
-    )
+    ])
     
     await callback.message.edit_text(
         "Выберите тип контента:",
