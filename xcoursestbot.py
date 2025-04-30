@@ -24,6 +24,7 @@ from aiogram.filters import Command, BaseFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram import BaseMiddleware
+from aiogram.types import InlineKeyboardButton
 from datetime import datetime
 from aiogram.enums import ParseMode 
 from aiogram.types import (
@@ -346,24 +347,6 @@ async def handle_submit_solution(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Submit error: {str(e)}")
         await message.answer("❌ Ошибка отправки решения")
-
-@dp.errors()
-async def global_error_handler(update: types.Update, exception: Exception):
-    logger.error(f"Critical error: {exception}", exc_info=True)
-    
-    try:
-        error_msg = f"🚨 Error: {str(exception)[:2000]}"
-        await bot.send_message(ADMIN_ID, error_msg)
-        
-        if update.message:
-            await update.message.answer("❌ Произошла ошибка, попробуйте позже")
-        elif update.callback_query:
-            await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
-            
-    except Exception as e:
-        logger.error(f"Error handler error: {e}")
-    
-    return True
 
 # Добавляем обработчик проверки курса
 @dp.callback_query(F.data.startswith("check_final_"))
@@ -1372,16 +1355,16 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
 
 # Универсальный обработчик ошибок
 @dp.errors()
-async def global_error_handler(update: types.Update, exception: Exception):
+async def global_error_handler(event: types.Update, exception: Exception):
     logger.critical(f"Critical error: {exception}", exc_info=True)
     try:
         error_msg = f"🚨 Error: {str(exception)[:2000]}"
         await bot.send_message(ADMIN_ID, error_msg)
         
-        if update.message:
-            await update.message.answer("❌ Произошла ошибка, попробуйте позже")
-        elif update.callback_query:
-            await update.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
+        if event.message:
+            await event.message.answer("❌ Произошла ошибка, попробуйте позже")
+        elif event.callback_query:
+            await event.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
             
     except Exception as e:
         logger.error(f"Error handler error: {e}")
@@ -2480,45 +2463,42 @@ def edit_action_keyboard():
 @dp.callback_query(F.data == "back_to_content_list")
 async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    content_type = data.get('content_type')
+    content_type = data.get('content_type', 'courses')  # Значение по умолчанию
     
-    # Добавляем проверку и значение по умолчанию
-    if content_type not in {"courses", "modules", "tasks", "final"}:
-        content_type = "courses"  # Значение по умолчанию
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📚 Курсы",
+                    callback_data=f"edit_content_courses"
+                ),
+                InlineKeyboardButton(
+                    text="📦 Модули",
+                    callback_data=f"edit_content_modules"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Задания",
+                    callback_data=f"edit_content_tasks"
+                ),
+                InlineKeyboardButton(
+                    text="🎓 Итоговые",
+                    callback_data=f"edit_content_final"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 В админ-меню",
+                    callback_data="admin_menu"
+                )
+            ]
+        ]
+    )
     
-    # Формируем корректный callback_data
     await callback.message.edit_text(
         "Выберите тип контента:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="📚 Курсы",
-                        callback_data=f"edit_content_courses"
-                    ),
-                    InlineKeyboardButton(
-                        text="📦 Модули",
-                        callback_data=f"edit_content_modules"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="📝 Задания",
-                        callback_data=f"edit_content_tasks"
-                    ),
-                    InlineKeyboardButton(
-                        text="🎓 Итоговые",
-                        callback_data=f"edit_content_final"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔙 В админ-меню",
-                        callback_data="admin_menu"
-                    )
-                ]
-            ]
-        )
+        reply_markup=keyboard
     )
     await state.update_data(content_type=content_type)
     await callback.answer()
