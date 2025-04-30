@@ -92,18 +92,49 @@ class Database:
             logger.critical(f"Ошибка подключения к базе данных: {e}")
             raise
 
- class Database:
+import logging
+from contextlib import contextmanager
+from psycopg2 import OperationalError
+from urllib.parse import urlparse
+from aiogram import Bot, Dispatcher, types
+from aiogram.fsm.state import State, StatesGroup
+
+logger = logging.getLogger(__name__)
+
+class Database:
     def __init__(self):
         self.conn = None
         self._connect()
         self._init_tables()
         self._check_connection()
 
+    def _check_connection(self):
+        with self.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            if cursor.fetchone()[0] != 1:
+                raise ConnectionError("Database connection failed")
+            
+    def _connect(self):
+        """Установка соединения с PostgreSQL"""
+        try:
+            self.conn = psycopg2.connect(
+                dbname=parsed_db.path[1:],
+                user=parsed_db.username,
+                password=parsed_db.password,
+                host=parsed_db.hostname,
+                port=parsed_db.port,
+                sslmode='require'
+            )
+            self.conn.autocommit = False
+        except OperationalError as e:
+            logger.critical(f"Ошибка подключения к базе данных: {e}")
+            raise
+
     def _init_tables(self):
-        """Инициализация таблиц в PostgreSQL с правильным порядком и зависимостями"""
+        """Инициализация таблиц в PostgreSQL"""
         try:
             with self.conn.cursor() as cursor:
-                # Создание таблиц в правильном порядке зависимостей
+                # Создание таблиц в правильном порядке
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -112,7 +143,6 @@ class Database:
                         registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''')
 
-                # Курсы должны быть созданы перед final_tasks и modules
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS courses (
                         course_id SERIAL PRIMARY KEY,
@@ -121,7 +151,6 @@ class Database:
                         media_id TEXT
                     )''')
 
-                # Модули зависят от курсов
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS modules (
                         module_id SERIAL PRIMARY KEY,
@@ -130,7 +159,6 @@ class Database:
                         media_id TEXT
                     )''')
 
-                # Задания зависят от модулей
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS tasks (
                         task_id SERIAL PRIMARY KEY,
@@ -141,7 +169,6 @@ class Database:
                         file_type VARCHAR(10)
                     )''')
 
-                # Итоговые задания зависят от курсов
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS final_tasks (
                         final_task_id SERIAL PRIMARY KEY,
@@ -152,14 +179,12 @@ class Database:
                         file_type VARCHAR(10)
                     )''')
 
-                # Решения зависят от пользователей и заданий
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS submissions (
                         submission_id SERIAL PRIMARY KEY,
                         user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                         task_id INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-                        status TEXT DEFAULT 'pending' 
-                            CHECK(status IN ('pending', 'accepted', 'rejected')),
+                        status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
                         score INTEGER CHECK(score BETWEEN 0 AND 100),
                         submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         file_id TEXT,
@@ -169,14 +194,6 @@ class Database:
 
                 # Создание индексов
                 cursor.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_modules_course 
-                    ON modules(course_id)''')
-                
-                cursor.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_tasks_module 
-                    ON tasks(module_id)''')
-                
-                cursor.execute('''
                     CREATE INDEX IF NOT EXISTS idx_submissions_status 
                     ON submissions(status)''')
                 
@@ -184,46 +201,33 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_submissions_user_task 
                     ON submissions(user_id, task_id)''')
 
-                # Добавление недостающих колонок с новой логикой
-                self._safe_add_column(cursor, 'users', 'current_course', 'INTEGER')
+                # Добавление недостающих колонок
                 self._safe_add_column(cursor, 'tasks', 'file_type', 'VARCHAR(10)')
                 self._safe_add_column(cursor, 'submissions', 'file_type', 'VARCHAR(10)')
 
                 self.conn.commit()
-
+                
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Ошибка инициализации таблиц: {e}")
             raise
 
     def _safe_add_column(self, cursor, table, column, col_type):
-        """Безопасное добавление колонки с проверкой существования"""
+        """Безопасное добавление колонки если не существует"""
         try:
-            cursor.execute(f'''
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 
-                        FROM information_schema.columns 
-                        WHERE table_name = '{table}' 
-                        AND column_name = '{column}'
-                    ) THEN
-                        EXECUTE format('ALTER TABLE %I ADD COLUMN %I %s', 
-                            '{table}', '{column}', '{col_type}');
-                    END IF;
-                END $$;
-            ''')
+            cursor.execute(
+                f"ALTER TABLE {table} "
+                f"ADD COLUMN IF NOT EXISTS {column} {col_type}"
+            )
         except Exception as e:
             logger.warning(f"Ошибка добавления колонки {column}: {e}")
             self.conn.rollback()
-
+            
     def is_course_completed(self, user_id: int, course_id: int) -> bool:
-        """Проверяет выполнение всех заданий курса с обработкой NULL"""
+        """Проверяет выполнение всех заданий курса"""
         with self.cursor() as cursor:
             cursor.execute('''
-                SELECT 
-                    COUNT(t.task_id) = COUNT(s.task_id),
-                    COUNT(t.task_id) > 0
+                SELECT COUNT(t.task_id) = COUNT(s.task_id)
                 FROM tasks t
                 LEFT JOIN modules m ON t.module_id = m.module_id
                 LEFT JOIN submissions s 
@@ -231,15 +235,13 @@ class Database:
                     AND s.user_id = %s 
                     AND s.status = 'accepted'
                 WHERE m.course_id = %s
-                GROUP BY m.course_id
             ''', (user_id, course_id))
-            
             result = cursor.fetchone()
-            return bool(result and result[0] and result[1])
+            return result[0] if result else False
 
     @contextmanager
     def cursor(self):
-        """Контекстный менеджер для работы с курсором с обработкой ошибок"""
+        """Контекстный менеджер для работы с курсором"""
         cursor = None
         try:
             cursor = self.conn.cursor()
@@ -247,20 +249,17 @@ class Database:
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
-            logger.error(f"Ошибка транзакции: {str(e)}")
+            logger.error(f"Ошибка транзакции: {e}")
             raise
         finally:
-            if cursor and not cursor.closed:
+            if cursor:
                 cursor.close()
 
     def close(self):
-        """Безопасное закрытие соединения с базой данных"""
+        """Закрытие соединения с базой данных"""
         if self.conn and not self.conn.closed:
-            try:
-                self.conn.close()
-                logger.info("Соединение с базой данных закрыто")
-            except Exception as e:
-                logger.error(f"Ошибка при закрытии соединения: {str(e)}")
+            self.conn.close()
+            logger.info("Соединение с базой данных закрыто")
                 
 # Инициализация объектов
 bot = Bot(token=TOKEN)
