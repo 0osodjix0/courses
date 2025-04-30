@@ -2730,7 +2730,7 @@ async def handle_reject(callback: types.CallbackQuery):
         logger.error(f"Критическая ошибка: {str(e)}", exc_info=True)
         await callback.answer("⚠️ Системная ошибка", show_alert=True)
 
-    @dp.message(TaskStates.waiting_final_solution)
+@dp.message(TaskStates.waiting_final_solution)
 async def process_final_solution(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
@@ -2742,7 +2742,7 @@ async def process_final_solution(message: Message, state: FSMContext):
             await message.answer("❌ Вы не завершили все задания курса!")
             await state.clear()
             return
-
+            
         # Сохраняем решение
         file_id = None
         file_type = None
