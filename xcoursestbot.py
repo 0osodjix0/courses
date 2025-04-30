@@ -183,6 +183,22 @@ class Database:
         except Exception as e:
             logger.warning(f"Ошибка добавления колонки {column}: {e}")
             self.conn.rollback()
+            
+    def is_course_completed(self, user_id: int, course_id: int) -> bool:
+        """Проверяет выполнение всех заданий курса"""
+        with self.cursor() as cursor:
+            cursor.execute('''
+                SELECT COUNT(t.task_id) = COUNT(s.task_id)
+                FROM tasks t
+                LEFT JOIN modules m ON t.module_id = m.module_id
+                LEFT JOIN submissions s 
+                    ON t.task_id = s.task_id 
+                    AND s.user_id = %s 
+                    AND s.status = 'accepted'
+                WHERE m.course_id = %s
+            ''', (user_id, course_id))
+            return cursor.fetchone()[0]
+        return False
 
     @contextmanager
     def cursor(self):
@@ -238,6 +254,7 @@ class TaskStates(StatesGroup):
     waiting_for_solution = State()
     waiting_for_retry = State()
     waiting_for_final_solution = State()
+    waiting_final_solution = State()
     
 def main_menu() -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
@@ -310,7 +327,89 @@ async def global_error_handler(update: types.Update, exception: Exception):
         logger.error("Ошибка в обработчике ошибок: %s", e)
 
     return True
+
+# Добавляем обработчик проверки курса
+@dp.callback_query(F.data.startswith("check_final_"))
+async def check_final_task(callback: CallbackQuery):
+    course_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
     
+    if db.is_course_completed(user_id, course_id):
+        await callback.message.answer(
+            "🎉 Вы выполнили все задания курса! Можете приступить к итоговому заданию:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🎓 Итоговое задание",
+                    callback_data=f"final_task_{course_id}"
+                )]
+            ])
+    else:
+        await callback.answer("❌ Сначала завершите все задания курса!", show_alert=True)
+
+# Модифицируем клавиатуру курса
+def course_details_keyboard(course_id: int, user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопки модулей
+    ...
+    
+    # Кнопка итогового задания
+    builder.button(
+        text="🎓 Итоговое задание" if db.is_course_completed(user_id, course_id) else "🔒 Итоговое (недоступно)",
+        callback_data=f"check_final_{course_id}"
+    )
+    
+    builder.button(text="🔙 Назад", callback_data="all_courses")
+    builder.adjust(1)
+    return builder.as_markup()
+
+# Автоматическая проверка при отправке решения
+@dp.callback_query(F.data.startswith("accept_"))
+async def accept_submission(callback: CallbackQuery):
+    ...
+    if db.is_course_completed(user_id, course_id):
+        await bot.send_message(
+            user_id,
+            "🎉 Вы завершили все задания курса! Теперь доступно итоговое задание.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🎓 Перейти к итоговому заданию",
+                    callback_data=f"final_task_{course_id}"
+                )]
+            ])
+
+# Обработчик итогового задания
+@dp.callback_query(F.data.startswith("final_task_"))
+async def show_final_task(callback: CallbackQuery, state: FSMContext):
+    course_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    if not db.is_course_completed(user_id, course_id):
+        await callback.answer("❌ Сначала завершите все задания курса!", show_alert=True)
+        return
+
+    # Получение данных итогового задания
+    with db.cursor() as cursor:
+        cursor.execute('''
+            SELECT title, content, file_id, file_type 
+            FROM final_tasks 
+            WHERE course_id = %s
+        ''', (course_id,))
+        final_task = cursor.fetchone()
+
+    if not final_task:
+        await callback.answer("❌ Итоговое задание не найдено", show_alert=True)
+        return
+        
+    title, content, file_id, file_type = final_task
+    
+    # Отправка задания
+    ...
+
+    await callback.message.answer("📤 Отправьте ваше решение итогового задания:")
+    await state.set_state(TaskStates.waiting_final_solution)
+    await state.update_data(course_id=course_id)
+
 @dp.message(F.text.startswith("🔄 Отправить исправление"))
 async def handle_retry_solution(message: Message, state: FSMContext):
     try:
@@ -2620,6 +2719,48 @@ async def handle_reject(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Критическая ошибка: {str(e)}", exc_info=True)
         await callback.answer("⚠️ Системная ошибка", show_alert=True)
+
+    @dp.message(TaskStates.waiting_final_solution)
+async def process_final_solution(message: Message, state: FSMContext):
+    try:
+        user_id = message.from_user.id
+        data = await state.get_data()
+        course_id = data.get('course_id')
+
+        # Проверяем выполнение всех заданий
+        if not db.is_course_completed(user_id, course_id):
+            await message.answer("❌ Вы не завершили все задания курса!")
+            await state.clear()
+            return
+
+        # Сохраняем решение
+        file_id = None
+        file_type = None
+        content = message.text
+
+        if message.document:
+            file_id = message.document.file_id
+            file_type = 'document'
+        elif message.photo:
+            file_id = message.photo[-1].file_id
+            file_type = 'photo'
+
+        with db.cursor() as cursor:
+            cursor.execute('''
+                INSERT INTO final_submissions 
+                (user_id, course_id, content, file_id, file_type)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (user_id, course_id, content, file_id, file_type))
+
+        # Уведомляем админа
+        await notify_admin_final_submission(user_id, course_id)
+        
+        await message.answer("✅ Решение итогового задания отправлено на проверку!")
+        await state.clear()
+
+    except Exception as e:
+        logger.error(f"Ошибка обработки итогового задания: {e}")
+        await message.answer("❌ Ошибка отправки решения")
 
 @dp.message(F.text == "🔙 В главное меню")
 async def back_to_main(message: Message):
