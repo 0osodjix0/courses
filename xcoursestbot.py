@@ -2476,7 +2476,7 @@ def edit_action_keyboard():
     builder.adjust(2, 1, 1, 1)
     return builder.as_markup()
 
-@dp.callback_query(F.data == "back_to_content_list"))
+@dp.callback_query(F.data == "back_to_content_list")
 async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     content_type = data.get('content_type', 'courses')
