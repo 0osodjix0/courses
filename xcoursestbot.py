@@ -368,20 +368,25 @@ def course_details_keyboard(course_id: int, user_id: int) -> InlineKeyboardMarku
     builder.adjust(1)
     return builder.as_markup()
 
-# Автоматическая проверка при отправке решения
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_submission(callback: CallbackQuery):
-    ...
+    # ... предыдущая логика обработки
+    
     if db.is_course_completed(user_id, course_id):
         await bot.send_message(
             user_id,
             "🎉 Вы завершили все задания курса! Теперь доступно итоговое задание.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="🎓 Перейти к итоговому заданию",
-                    callback_data=f"final_task_{course_id}"
-                )]
-            ])
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🎓 Перейти к итоговому заданию",
+                            callback_data=f"final_task_{course_id}"
+                        )
+                    ]
+                ]
+            )
+        )  # Закрыты 2 скобки: для reply_markup и send_message
 
 # Обработчик итогового задания
 @dp.callback_query(F.data.startswith("final_task_"))
