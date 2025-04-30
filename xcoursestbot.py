@@ -297,6 +297,7 @@ class AdminForm(StatesGroup):
     edit_description = State()
     edit_media = State()
     edit_select_item = State()
+    edit_action = State()
     
 class TaskStates(StatesGroup):
     waiting_for_solution = State()
@@ -2423,15 +2424,15 @@ async def select_content_type(callback: CallbackQuery, state: FSMContext):
     
     # Получаем список элементов
     with db.cursor() as cursor:
-        if content_type == "courses":
-            cursor.execute("SELECT course_id, title FROM courses")
-        elif content_type == "modules":
-            cursor.execute("SELECT module_id, title FROM modules")
-        elif content_type == "tasks":
-            cursor.execute("SELECT task_id, title FROM tasks")
-        elif content_type == "final":
-            cursor.execute("SELECT final_task_id, title FROM final_tasks")
+        table_map = {
+            "courses": ("courses", "course_id", "title"),
+            "modules": ("modules", "module_id", "title"),
+            "tasks": ("tasks", "task_id", "title"),
+            "final": ("final_tasks", "final_task_id", "title")
+        }
         
+        table, id_col, title_col = table_map[content_type]
+        cursor.execute(f"SELECT {id_col}, {title_col} FROM {table}")
         items = cursor.fetchall()
 
     builder = InlineKeyboardBuilder()
@@ -2440,7 +2441,7 @@ async def select_content_type(callback: CallbackQuery, state: FSMContext):
             text=title,
             callback_data=f"edit_select_{item_id}"
         )
-    builder.button(text="🔙 Назад", callback_data="edit_content_menu")
+    builder.button(text="🔙 В меню", callback_data="edit_content_menu")
     builder.adjust(1)
     
     await callback.message.edit_text(
@@ -2454,17 +2455,48 @@ async def select_item(callback: CallbackQuery, state: FSMContext):
     item_id = int(callback.data.split("_")[2])
     await state.update_data(item_id=item_id)
     
+    await callback.message.edit_text(
+        "Выберите действие:",
+        reply_markup=edit_action_keyboard()
+    )
+    await state.set_state(AdminForm.edit_action)
+    
+    def edit_action_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Название", callback_data="edit_title")
     builder.button(text="📝 Описание", callback_data="edit_description")
     builder.button(text="🖼 Медиа", callback_data="edit_media")
-    builder.button(text="🔙 Назад", callback_data="edit_content_type")
-    builder.adjust(2, 1)
+    builder.button(text="🗑 Удалить", callback_data="delete_item")
+    builder.button(text="🔙 Назад", callback_data="back_to_content_list")
+    builder.adjust(2, 1, 1, 1)
+    return builder.as_markup()
+
     
     await callback.message.edit_text(
         "Выберите что хотите изменить:",
         reply_markup=builder.as_markup()
     )
+
+@dp.callback_query(F.data == "back_to_content_list")
+async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    content_type = data['content_type']
+    
+    # Повторно используем обработчик выбора типа контента
+    await select_content_type(callback, state)
+    await callback.answer()
+
+@dp.callback_query(F.data == "delete_item")
+async def delete_item_handler(callback: CallbackQuery, state: FSMContext):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да", callback_data="confirm_delete")
+    builder.button(text="❌ Нет", callback_data="cancel_delete")
+    
+    await callback.message.edit_text(
+        "❌ Вы уверены, что хотите удалить этот элемент?",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(AdminForm.delete_confirmation)
 
 @dp.callback_query(F.data == "edit_title")
 async def start_edit_title(callback: CallbackQuery, state: FSMContext):
@@ -2567,21 +2599,6 @@ async def process_edit_media(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}")
 
 # 7. Обработчик возвратов
-@dp.callback_query(F.data == "edit_content_menu")
-async def back_to_edit_menu(callback: CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📚 Курсы", callback_data="edit_content_courses")
-    builder.button(text="📦 Модули", callback_data="edit_content_modules")
-    builder.button(text="📝 Задания", callback_data="edit_content_tasks")
-    builder.button(text="🎓 Итоговые", callback_data="edit_content_final")
-    builder.button(text="🔙 В админ-меню", callback_data="admin_menu")
-    builder.adjust(2, 2)
-    
-    await callback.message.edit_text(
-        "Выберите тип контента:",
-        reply_markup=builder.as_markup()
-    )
-
 @dp.callback_query(F.data == "edit_content_type")
 async def back_to_content_type(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -2681,43 +2698,63 @@ async def process_edit_course(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "confirm_delete")
 async def confirm_delete(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    content_type = data['content_type']
+    item_id = data['item_id']
+    
     try:
         with db.cursor() as cursor:
-            content_type = data['content_type']
-            item_id = data['item_id']
+            if content_type == "courses":
+                cursor.execute("DELETE FROM courses WHERE course_id = %s", (item_id,))
+            elif content_type == "modules":
+                cursor.execute("DELETE FROM modules WHERE module_id = %s", (item_id,))
+            elif content_type == "tasks":
+                cursor.execute("DELETE FROM tasks WHERE task_id = %s", (item_id,))
+            elif content_type == "final":
+                cursor.execute("DELETE FROM final_tasks WHERE final_task_id = %s", (item_id,))
             
-            tables = {
-                "courses": ("courses", "course_id"),
-                "modules": ("modules", "module_id"),
-                "tasks": ("tasks", "task_id"),
-                "final": ("final_tasks", "final_task_id")
-            }
-            
-            table, column = tables[content_type]
-            cursor.execute(f"DELETE FROM {table} WHERE {column} = %s", (item_id,))
-            
-            await callback.message.edit_text(f"✅ {content_type[:-1].capitalize()} успешно удален!")
-            
-    except Exception as e:
-        await callback.message.answer(f"❌ Ошибка удаления: {str(e)}")
-    finally:
-        await state.clear()
+        await callback.message.edit_text("✅ Элемент успешно удален!")
+        await back_to_content_list(callback, state)
         
+    except Exception as e:
+        logger.error(f"Ошибка удаления: {e}")
+        await callback.answer("❌ Ошибка при удалении элемента")
+    
+    await state.clear()
+
+@dp.callback_query(F.data == "cancel_delete")
+async def cancel_delete(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Выберите действие:",
+        reply_markup=edit_action_keyboard()
+    )
+    await state.set_state(AdminForm.edit_action)
+    await callback.answer()
+
 @dp.callback_query(F.data == "edit_content_menu")
-async def edit_content_menu(callback: CallbackQuery):
+async def back_to_edit_menu(callback: CallbackQuery):
     builder = InlineKeyboardBuilder()
     builder.button(text="📚 Курсы", callback_data="edit_content_courses")
     builder.button(text="📦 Модули", callback_data="edit_content_modules")
     builder.button(text="📝 Задания", callback_data="edit_content_tasks")
     builder.button(text="🎓 Итоговые", callback_data="edit_content_final")
     builder.button(text="🔙 В админ-меню", callback_data="admin_menu")
-    builder.adjust(1)
+    builder.adjust(2, 2)
     
     await callback.message.edit_text(
-        "Выберите тип контента для редактирования:",
+        "Выберите тип контента:",
         reply_markup=builder.as_markup()
     )
-    
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_menu")
+async def back_to_admin_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "Админ-меню:",
+        reply_markup=admin_menu()
+    )
+    await callback.answer()
+
 @dp.message(AdminForm.add_task_media, F.content_type.in_({'document', 'photo'}))
 async def process_task_media(message: Message, state: FSMContext):
     media = await handle_media(message)
