@@ -2492,25 +2492,31 @@ async def handle_content_action(callback: CallbackQuery, state: FSMContext):
     content_type = data['content_type']
     
     if action == "edit_action":
-        # Переходим в состояние редактирования
         if content_type == "courses":
             await state.set_state(AdminForm.edit_course)
         elif content_type == "modules":
             await state.set_state(AdminForm.edit_module)
-        ...
-        
+        elif content_type == "tasks":
+            await state.set_state(AdminForm.edit_task)
+        elif content_type == "final":
+            await state.set_state(AdminForm.edit_final_task)
+            
         await callback.message.answer("Введите новые данные (формат: Название|Описание|file_id)")
     
     elif action == "delete_action":
         await state.set_state(AdminForm.delete_confirmation)
         await callback.message.answer(
             "❌ Вы уверены что хотите удалить?",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Да", callback_data="confirm_delete"),
-                 InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")]
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ Да", callback_data="confirm_delete"),
+                        InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")
+                    ]
+                ]
             )
-        )
-
+        )  # Закрыты 3 скобки: для списка кнопок, InlineKeyboardMarkup и reply_markup
+        
 # Обработчик редактирования курса
 @dp.message(AdminForm.edit_course)
 async def process_edit_course(message: Message, state: FSMContext):
