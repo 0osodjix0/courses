@@ -2461,7 +2461,7 @@ async def select_item(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AdminForm.edit_action)
     
-    def edit_action_keyboard():
+def edit_action_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Название", callback_data="edit_title")
     builder.button(text="📝 Описание", callback_data="edit_description")
@@ -2470,7 +2470,6 @@ async def select_item(callback: CallbackQuery, state: FSMContext):
     builder.button(text="🔙 Назад", callback_data="back_to_content_list")
     builder.adjust(2, 1, 1, 1)
     return builder.as_markup()
-
     
     await callback.message.edit_text(
         "Выберите что хотите изменить:",
