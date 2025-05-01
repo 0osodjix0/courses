@@ -2399,16 +2399,16 @@ async def content_management(message: Message):
 # Общий обработчик выбора типа контента
 @dp.callback_query(F.data.startswith("edit_content_"))
 async def select_content_type(callback: CallbackQuery, state: FSMContext):
-    try:
-        content_type = callback.data.split("_")[2]
-        valid_types = {"courses", "modules", "tasks", "final"}
-        
-        if content_type not in valid_types:
-            await callback.answer("❌ Неверный тип контента")
-            return
-
-        # Сохраняем тип контента в state
-        await state.update_data(content_type=content_type)
+    content_type = callback.data.split("_")[2]
+    valid_types = {"courses", "modules", "tasks", "final"}
+    
+    if content_type not in valid_types:
+        await callback.answer("❌ Неверный тип контента")
+        await state.update_data(content_type='courses')  # Сброс к default
+        return
+    
+    await state.update_data(content_type=content_type)
+    ...
         
         # Получаем список элементов
         with db.cursor() as cursor:
@@ -2481,20 +2481,36 @@ async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     content_type = data.get('content_type', 'courses')
     
-    # Формируем клавиатуру
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📚 Курсы", callback_data="edit_content_courses"),
-            InlineKeyboardButton(text="📦 Модули", callback_data="edit_content_modules")
-        ],
-        [
-            InlineKeyboardButton(text="📝 Задания", callback_data="edit_content_tasks"),
-            InlineKeyboardButton(text="🎓 Итоговые", callback_data="edit_content_final")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 В админ-меню", callback_data="admin_menu")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📚 Курсы",
+                    callback_data="edit_content_courses"
+                ),
+                InlineKeyboardButton(
+                    text="📦 Модули",
+                    callback_data="edit_content_modules"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Задания",
+                    callback_data="edit_content_tasks"
+                ),
+                InlineKeyboardButton(
+                    text="🎓 Итоговые",
+                    callback_data="edit_content_final"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 В админ-меню",
+                    callback_data="admin_menu"
+                )
+            ]
         ]
-    ])
+    )
     
     await callback.message.edit_text(
         "Выберите тип контента:",
@@ -2502,7 +2518,7 @@ async def back_to_content_list(callback: CallbackQuery, state: FSMContext):
     )
     await state.update_data(content_type=content_type)
     await callback.answer()
-
+    
 @dp.callback_query(F.data == "delete_item")
 async def delete_item_handler(callback: CallbackQuery, state: FSMContext):
     builder = InlineKeyboardBuilder()
