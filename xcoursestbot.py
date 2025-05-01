@@ -70,6 +70,7 @@ class Database:
         self._connect()
         self._init_tables()
         self._check_connection()
+        self.conn.autocommit = True
 
     def _check_connection(self):
         with self.cursor() as cursor:
@@ -1370,7 +1371,7 @@ async def global_error_handler(event: types.Update, exception: Exception):
         logger.error(f"Error handler error: {e}")
     
     return True
-
+    
 @dp.message(F.text == "🏠 В главное меню")
 async def handle_main_menu(message: Message, state: FSMContext):
     await state.clear()
@@ -1596,58 +1597,57 @@ async def retry_submission(callback: CallbackQuery, state: FSMContext):
 async def notify_admin(submission_id: int):
     try:
         with db.cursor() as cursor:
-            # Исправленный запрос:
             cursor.execute('''
-                SELECT s.file_id, s.file_type, s.content,
-                       t.title, u.full_name, t.content as task_text
+                SELECT s.submission_id, t.title, u.full_name, 
+                       s.content, s.file_id, s.file_type,
+                       c.title as course_title
                 FROM submissions s
                 JOIN tasks t ON s.task_id = t.task_id
                 JOIN users u ON s.user_id = u.user_id
+                JOIN modules m ON t.module_id = m.module_id
+                JOIN courses c ON m.course_id = c.course_id
                 WHERE s.submission_id = %s
             ''', (submission_id,))
             
-            data = cursor.fetchone()
-            if not data:
-                return
+            submission = cursor.fetchone()
 
-            # Формирование сообщения с текстом задания
-            text = (f"📬 Новое решение #{submission_id}\n"
-                    f"📚 Задание: {data[3]}\n"
-                    f"👤 Студент: {data[4]}\n"
-                    f"📝 Текст задания:\n{data[5]}\n\n"
-                    f"✏️ Решение:\n{data[2] or 'Файл во вложении'}")
+        if not submission:
+            return
 
-            # Отправка файла
-            if data[0] and data[1]:
-                ...
+        text = (f"📬 Новое решение #{submission[0]}\n"
+                f"📚 Курс: {submission[6]}\n"
+                f"📝 Задание: {submission[1]}\n"
+                f"👤 Студент: {submission[2]}\n"
+                f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                f"✏️ Решение:\n{submission[3] or 'Файл во вложении'}")
 
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
-            kb.button(text="❌ Требует правок", callback_data=f"reject_{submission_id}")
-            kb.button(text="📨 Написать студенту", url=f"tg://user?id={student_id}")
-            kb.adjust(2, 1)
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Принять", callback_data=f"accept_{submission_id}")
+        kb.button(text="❌ Отклонить", callback_data=f"reject_{submission_id}")
+        kb.adjust(2)
 
-            if file_id and file_type:
-                if file_type == 'photo':
-                    await bot.send_photo(
-                        ADMIN_ID,
-                        file_id,
-                        caption=text[:1024],
-                        reply_markup=kb.as_markup()
-                    )
-                else:
-                    await bot.send_document(
-                        ADMIN_ID,
-                        file_id,
-                        caption=text[:1024],
-                        reply_markup=kb.as_markup()
-                    )
-            else:
-                await bot.send_message(
+        if submission[4] and submission[5]:
+            if submission[5] == 'photo':
+                await bot.send_photo(
                     ADMIN_ID,
-                    text,
+                    submission[4],
+                    caption=text[:1024],
                     reply_markup=kb.as_markup()
                 )
+            else:
+                await bot.send_document(
+                    ADMIN_ID,
+                    submission[4],
+                    caption=text[:1024],
+                    reply_markup=kb.as_markup()
+                )
+        else:
+            await bot.send_message(
+                ADMIN_ID,
+                text,
+                reply_markup=kb.as_markup()
+            )
+
     except Exception as e:
         logger.error(f"Ошибка уведомления админа: {str(e)}")
         
@@ -1882,50 +1882,97 @@ async def view_submission(callback: CallbackQuery):
         
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_submission(callback: CallbackQuery):
-    submission_id = int(callback.data.split("_")[1])
-    
-    with db.cursor() as cursor:
-        cursor.execute('''
-            UPDATE submissions 
-            SET status = 'accepted', 
-                score = 100 
-            WHERE submission_id = %s
-            RETURNING user_id, task_id
-        ''', (submission_id,))
-        user_id, task_id = cursor.fetchone()
+    try:
+        submission_id = int(callback.data.split("_")[1])
         
-        cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
-        task_title = cursor.fetchone()[0]
+        with db.cursor() as cursor:
+            # Обновляем статус решения
+            cursor.execute('''
+                UPDATE submissions 
+                SET status = 'accepted', 
+                    score = 100,
+                    reviewed_at = NOW() 
+                WHERE submission_id = %s
+                RETURNING user_id, task_id
+            ''', (submission_id,))
+            
+            result = cursor.fetchone()
+            if not result:
+                await callback.answer("❌ Решение не найдено")
+                return
+                
+            user_id, task_id = result
 
-    await bot.send_message(
-        user_id,
-        f"✅ Ваше решение по заданию «{task_title}» принято!"
-    )
-    await callback.message.edit_reply_markup()
-    await callback.answer("Решение принято!")
+            # Получаем информацию для уведомления студента
+            cursor.execute('''
+                SELECT t.title, c.title 
+                FROM tasks t
+                JOIN modules m ON t.module_id = m.module_id
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE t.task_id = %s
+            ''', (task_id,))
+            task_info = cursor.fetchone()
+
+        # Уведомление студента
+        if task_info:
+            await bot.send_message(
+                user_id,
+                f"✅ Ваше решение по заданию «{task_info[0]}» принято!\n"
+                f"Курс: {task_info[1]}\n"
+                f"Статус: Принято ✅"
+            )
+
+        # Удаляем сообщение администратора
+        await callback.message.delete()
+        await callback.answer("Решение принято!")
+
+    except Exception as e:
+        logger.error(f"Ошибка принятия решения: {str(e)}")
+        await callback.answer("❌ Ошибка при обработке")
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_submission(callback: CallbackQuery):
-    submission_id = int(callback.data.split("_")[1])
-    
-    with db.cursor() as cursor:
-        cursor.execute('''
-            UPDATE submissions 
-            SET status = 'rejected'
-            WHERE submission_id = %s
-            RETURNING user_id, task_id
-        ''', (submission_id,))
-        user_id, task_id = cursor.fetchone()
+    try:
+        submission_id = int(callback.data.split("_")[1])
         
-        cursor.execute('SELECT title FROM tasks WHERE task_id = %s', (task_id,))
-        task_title = cursor.fetchone()[0]
+        with db.cursor() as cursor:
+            # Получаем данные для уведомления
+            cursor.execute('''
+                SELECT s.user_id, t.title, c.title 
+                FROM submissions s
+                JOIN tasks t ON s.task_id = t.task_id
+                JOIN modules m ON t.module_id = m.module_id
+                JOIN courses c ON m.course_id = c.course_id
+                WHERE s.submission_id = %s
+            ''', (submission_id,))
+            submission_data = cursor.fetchone()
 
-    await bot.send_message(
-        user_id,
-        f"❌ Ваше решение по заданию «{task_title}» требует доработок."
-    )
-    await callback.message.edit_reply_markup()
-    await callback.answer("Решение отклонено")
+            if submission_data:
+                user_id, task_title, course_title = submission_data
+                
+                # Обновляем статус
+                cursor.execute('''
+                    UPDATE submissions 
+                    SET status = 'rejected',
+                        reviewed_at = NOW()
+                    WHERE submission_id = %s
+                ''', (submission_id,))
+
+                # Уведомляем студента
+                await bot.send_message(
+                    user_id,
+                    f"❌ Ваше решение по заданию «{task_title}» отклонено.\n"
+                    f"Курс: {course_title}\n"
+                    "Пожалуйста, доработайте решение и отправьте заново."
+                )
+
+        await callback.message.delete()
+        await callback.answer("Решение отклонено")
+
+    except Exception as e:
+        logger.error(f"Ошибка отклонения решения: {str(e)}")
+        await callback.answer("❌ Ошибка при обработке")
+        
     
 @dp.message(F.text == "📊 Статистика")
 async def show_stats(message: types.Message):
