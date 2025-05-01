@@ -522,6 +522,23 @@ def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
         builder.button(text="⚠️ Ошибка загрузки", callback_data="error")
     
     return builder.as_markup()
+    
+@dp.errors()
+async def global_error_handler(event: types.Update, exception: Exception):
+    logger.critical(f"Critical error: {exception}", exc_info=True)
+    try:
+        error_msg = f"🚨 Error: {str(exception)[:2000]}"
+        await bot.send_message(ADMIN_ID, error_msg)
+        
+        if event.message:
+            await event.message.answer("❌ Произошла ошибка, попробуйте позже")
+        elif event.callback_query:
+            await event.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
+            
+    except Exception as e:
+        logger.error(f"Error handler error: {e}")
+    
+    return True
 
 # Добавляем обработчик для кнопки "Назад к модулю"
 @dp.callback_query(F.data.startswith("module_from_task_"))
@@ -1353,24 +1370,6 @@ async def generate_tasks_keyboard(module_id: int) -> InlineKeyboardMarkup:
         await message.answer("⚠️ Произошла ошибка при загрузке заданий")
     
     return builder.as_markup()
-
-# Универсальный обработчик ошибок
-@dp.errors()
-async def global_error_handler(event: types.Update, exception: Exception):
-    logger.critical(f"Critical error: {exception}", exc_info=True)
-    try:
-        error_msg = f"🚨 Error: {str(exception)[:2000]}"
-        await bot.send_message(ADMIN_ID, error_msg)
-        
-        if event.message:
-            await event.message.answer("❌ Произошла ошибка, попробуйте позже")
-        elif event.callback_query:
-            await event.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
-            
-    except Exception as e:
-        logger.error(f"Error handler error: {e}")
-    
-    return True
     
 @dp.message(F.text == "🏠 В главное меню")
 async def handle_main_menu(message: Message, state: FSMContext):
