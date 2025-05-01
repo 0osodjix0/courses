@@ -523,21 +523,25 @@ def modules_kb(course_id: int) -> types.InlineKeyboardMarkup:
     
     return builder.as_markup()
     
+# Обработчик ошибок должен быть первым
 @dp.errors()
-async def global_error_handler(event: types.Update, exception: Exception):
-    logger.critical(f"Critical error: {exception}", exc_info=True)
-    try:
-        error_msg = f"🚨 Error: {str(exception)[:2000]}"
-        await bot.send_message(ADMIN_ID, error_msg)
-        
-        if event.message:
-            await event.message.answer("❌ Произошла ошибка, попробуйте позже")
-        elif event.callback_query:
-            await event.callback_query.answer("⚠️ Ошибка обработки", show_alert=True)
-            
-    except Exception as e:
-        logger.error(f"Error handler error: {e}")
+async def global_error_handler(update: types.Update, exception: Exception):
+    logger = logging.getLogger(__name__)
+    logger.critical(
+        "Critical error: %s\nUpdate: %s",
+        exception,
+        update.model_dump_json(indent=2),
+        exc_info=True
+    )
     
+    try:
+        await bot.send_message(
+            chat_id=os.getenv("ADMIN_ID"),
+            text=f"🚨 Error: {exception}\nType: {type(exception)}"
+        )
+    except Exception as e:
+        logger.error("Failed to send error notification: %s", e)
+
     return True
 
 # Добавляем обработчик для кнопки "Назад к модулю"
