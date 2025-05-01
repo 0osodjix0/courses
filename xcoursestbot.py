@@ -2399,18 +2399,19 @@ async def content_management(message: Message):
 # Общий обработчик выбора типа контента
 @dp.callback_query(F.data.startswith("edit_content_"))
 async def select_content_type(callback: CallbackQuery, state: FSMContext):
-    content_type = callback.data.split("_")[2]
-    valid_types = {"courses", "modules", "tasks", "final"}
-    
-    if content_type not in valid_types:
-        await callback.answer("❌ Неверный тип контента")
-        await state.update_data(content_type='courses')  # Сброс к default
-        return
-    
-    await state.update_data(content_type=content_type)
-    ...
+    try:
+        content_type = callback.data.split("_")[2]
+        valid_types = {"courses", "modules", "tasks", "final"}
         
-        # Получаем список элементов
+        if content_type not in valid_types:
+            await callback.answer("❌ Неверный тип контента")
+            await state.update_data(content_type='courses')
+            return
+
+        # Сохраняем тип контента
+        await state.update_data(content_type=content_type)
+
+        # Получаем данные из БД
         with db.cursor() as cursor:
             table_map = {
                 "courses": ("courses", "course_id", "title"),
@@ -2423,6 +2424,7 @@ async def select_content_type(callback: CallbackQuery, state: FSMContext):
             cursor.execute(f"SELECT {id_col}, {title_col} FROM {table}")
             items = cursor.fetchall()
 
+        # Строим клавиатуру
         builder = InlineKeyboardBuilder()
         for item_id, title in items:
             builder.button(
@@ -2431,7 +2433,7 @@ async def select_content_type(callback: CallbackQuery, state: FSMContext):
             )
         builder.button(
             text="🔙 Назад", 
-            callback_data=f"edit_content_back_{content_type}"  # Добавляем тип в callback
+            callback_data=f"edit_content_back_{content_type}"
         )
         builder.adjust(1)
         
@@ -2444,7 +2446,7 @@ async def select_content_type(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         logger.error(f"Ошибка выбора типа контента: {str(e)}")
         await callback.answer("❌ Ошибка загрузки")
-
+        
 @dp.callback_query(F.data.startswith("edit_content_back_"))
 async def back_to_content_types(callback: CallbackQuery, state: FSMContext):
     content_type = callback.data.split("_")[3]
