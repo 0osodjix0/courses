@@ -3,6 +3,7 @@ import logging
 import random
 import psycopg2
 from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramBadRequest
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
