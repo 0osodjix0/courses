@@ -2510,17 +2510,21 @@ async def select_content_type(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("edit_content_back_"))
 async def back_to_content_types(callback: CallbackQuery, state: FSMContext):
     try:
-        content_type = callback.data.split("_")[3]
-        await state.update_data(content_type=content_type)
+        # Извлекаем content_type из callback.data
+        parts = callback.data.split('_')
+        if len(parts) < 4:
+            logger.error(f"Invalid callback data: {callback.data}")
+            await callback.answer("❌ Ошибка данных")
+            return
+        content_type = parts[3]
         
-        # Формируем клавиатуру для типа контента
-        builder = InlineKeyboardBuilder()
-        type_names = {
-            "courses": "курсы",
-            "modules": "модули", 
-            "tasks": "задания",
-            "final": "итоговые задания"
-        }
+        # Проверяем валидность content_type
+        valid_types = {"courses", "modules", "tasks", "final"}
+        if content_type not in valid_types:
+            await callback.answer("❌ Неверный тип контента")
+            return
+
+        await state.update_data(content_type=content_type)
         
         # Получаем элементы из БД
         with db.cursor() as cursor:
@@ -2531,28 +2535,29 @@ async def back_to_content_types(callback: CallbackQuery, state: FSMContext):
                 "final": ("final_tasks", "final_task_id", "title")
             }
             
+            if content_type not in table_map:
+                await callback.answer("❌ Неподдерживаемый тип контента")
+                return
+                
             table_name, id_col, title_col = table_map[content_type]
             cursor.execute(f"SELECT {id_col}, {title_col} FROM {table_name}")
             items = cursor.fetchall()
 
-            # Создаем кнопки элементов
-            for item_id, title in items:
-                builder.button(
-                    text=f"📌 {title}",
-                    callback_data=f"edit_select_{item_id}"
-                )
-            
-            # Добавляем навигацию
-            builder.row(
-                InlineKeyboardButton(
-                    text="🔙 Назад к типам",
-                    callback_data="edit_content_menu"
-                )
+        # Формируем клавиатуру
+        builder = InlineKeyboardBuilder()
+        for item_id, title in items:
+            builder.button(
+                text=f"📌 {title}",
+                callback_data=f"edit_select_{item_id}"
             )
-            builder.adjust(1)
+        builder.button(
+            text="🔙 Назад к типам",
+            callback_data="edit_content_menu"
+        )
+        builder.adjust(1)
 
         await callback.message.edit_text(
-            f"📋 Список {type_names[content_type]}:",
+            f"📋 Список {content_type}:",
             reply_markup=builder.as_markup()
         )
 
